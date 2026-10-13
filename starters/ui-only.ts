@@ -6,7 +6,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { type Component, type KeybindingsManager, truncateToWidth } from "@earendil-works/pi-tui";
 
-const STATUS_KEY = "myext";
+const STATUS_KEY = "social-research";
 // A configurable keybinding id (escape and ctrl+c by default) instead of a hard-coded key.
 const CLOSE_KEYBINDING = "tui.select.cancel";
 
@@ -19,7 +19,7 @@ export default function uiOnlyExtension(pi: ExtensionAPI) {
     ctx.ui.setStatus(STATUS_KEY, "Ready");
 
     // Widget: a line above (or below) the editor
-    ctx.ui.setWidget("myext-hint", ["Tip: use /myext to open the dashboard"]);
+    ctx.ui.setWidget("social-research-hint", ["Tip: use /social-research to open the dashboard"]);
   });
 
   pi.on("turn_start", (_event, ctx) => {
@@ -35,7 +35,7 @@ export default function uiOnlyExtension(pi: ExtensionAPI) {
 
   // Command that opens a custom UI component via ctx.ui.custom().
   // custom() replaces the editor with your component until done() is called.
-  pi.registerCommand("myext", {
+  pi.registerCommand("social-research", {
     description: "Open a small dashboard",
     handler: async (_args, ctx) => {
       // custom() needs the terminal UI. ctx.hasUI is also true over RPC, where custom()

@@ -7,11 +7,11 @@ export default function hybridExtension(pi: ExtensionAPI) {
 
   pi.on("session_start", (_event, ctx) => {
     if (ctx.hasUI) {
-      ctx.ui.setStatus("myext", "hybrid starter loaded");
+      ctx.ui.setStatus("social-research", "hybrid starter loaded");
     }
   });
 
-  pi.registerCommand("myext", {
+  pi.registerCommand("social-research", {
     description: "Show starter status or toggle active mode",
     handler: async (args, ctx) => {
       switch (args.trim().toLowerCase()) {
@@ -31,13 +31,13 @@ export default function hybridExtension(pi: ExtensionAPI) {
         }
 
         default:
-          notify(ctx, "Usage: /myext toggle | reset");
+          notify(ctx, "Usage: /social-research toggle | reset");
       }
     },
   });
 
   pi.registerTool({
-    name: "myext_echo",
+    name: "social-research_echo",
     label: "Echo",
     description: "Echo text back to the model.",
     promptSnippet: "Echo text back, optionally formatted as JSON.",

@@ -6,7 +6,7 @@ import {
   isToolCallEventType,
 } from "@earendil-works/pi-coding-agent";
 
-const STATUS_KEY = "myext";
+const STATUS_KEY = "social-research";
 // `rm -rf` / `sudo rm` for bash, `Remove-Item … -Recurse` for PowerShell.
 const DANGEROUS_COMMAND = /rm -rf|sudo rm|\bRemove-Item\b.*-Recurse/i;
 const SECRET = /API_KEY=\S+/g;

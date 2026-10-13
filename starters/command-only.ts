@@ -3,7 +3,7 @@ import { type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-cod
 export default function commandOnlyExtension(pi: ExtensionAPI) {
   let enabled = true;
 
-  pi.registerCommand("myext", {
+  pi.registerCommand("social-research", {
     description: "Toggle and inspect extension state",
     getArgumentCompletions: (prefix) => {
       const options = ["status", "enable", "disable", "mode"];
@@ -41,7 +41,7 @@ export default function commandOnlyExtension(pi: ExtensionAPI) {
         }
 
         default:
-          notify(ctx, "/myext status | enable | disable | mode");
+          notify(ctx, "/social-research status | enable | disable | mode");
       }
     },
   });

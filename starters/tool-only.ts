@@ -14,7 +14,7 @@ interface EchoDetails {
 
 export default function toolOnlyExtension(pi: ExtensionAPI) {
   pi.registerTool({
-    name: "myext_echo",
+    name: "social-research_echo",
     label: "Echo",
     description: "Echo text back to the model.",
     promptSnippet: "Echo text back, optionally uppercased or formatted.",
@@ -81,7 +81,7 @@ export default function toolOnlyExtension(pi: ExtensionAPI) {
   // multi-line output (logs, files, command output) use pi's line/byte-based truncateHead or
   // truncateTail from @earendil-works/pi-coding-agent and tell the model where the rest is.
   pi.on("tool_result", (event) => {
-    if (event.toolName !== "myext_echo") {
+    if (event.toolName !== "social-research_echo") {
       return;
     }
 

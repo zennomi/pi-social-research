@@ -64,18 +64,10 @@ After you finish renaming, these are usually not meant to ship forever:
 
 - `scripts/setup.mjs`
 - `pnpm run setup-template`
-- `.agents/skills/` (the repo-local bootstrap skill folder, if you no longer need it) and its
-  test, `test/bootstrap-skill.test.ts`
 
 Remove them once the extension has been renamed and you no longer need template bootstrapping.
 Also delete unused starter files and their tests in `test/starters.test.ts`. Starters are never
 packed (`files` ships only `src/`), so this keeps the repo and its checks focused, not the tarball.
-
-## Repo-local bootstrap skill
-
-This template includes a repo-local skill at `.agents/skills/create-extension-repo`.
-
-Use `/skill:create-extension-repo` from this template repo to create a fresh GitHub repo with `gh repo create --template`, clone it locally, and remove the bootstrap skill folder from the generated repo so the child repo does not keep this template-only helper.
 
 ## Verify the template
 
@@ -137,15 +129,15 @@ If you copy a starter into `src/index.ts` **before** running `setup-template`, t
 Pi has built-in package management:
 
 ```bash
-pi -e npm:my-pi-extension                 # try it for one run without installing
-pi install npm:my-pi-extension            # or npm:my-pi-extension@1.2.3 to pin
-pi install git:github.com/ayagmar/pi-extension-template
+pi -e npm:@zennomi/pi-social-research                 # try it for one run without installing
+pi install npm:@zennomi/pi-social-research            # or npm:@zennomi/pi-social-research@1.2.3 to pin
+pi install git:github.com/zennomi/pi-social-research
 pi install ./relative/path/to/your-extension-repo
 
 pi list
-pi update npm:my-pi-extension             # one package
+pi update npm:@zennomi/pi-social-research             # one package
 pi update --extensions                    # all packages (bare `pi update` updates pi itself)
-pi remove npm:my-pi-extension
+pi remove npm:@zennomi/pi-social-research
 pi config
 ```
 
@@ -232,8 +224,6 @@ pnpm run release:dry
 - `test/smoke-test.test.ts` proves the smoke test fails when an event handler throws at startup
   (pi reports those as `extension_error` lines on stdout, not as a non-zero exit)
 - `test/setup.test.ts` covers `setup-template` (template-only; setup deletes it)
-- `test/bootstrap-skill.test.ts` covers the bootstrap skill's helper with a fake `gh`
-  (template-only; removed together with the skill)
 - `pnpm run smoke-test` loads the package itself (the `pi` manifest) with the real pi CLI
 
 ## Docs worth reading

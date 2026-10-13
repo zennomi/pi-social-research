@@ -159,7 +159,7 @@ void test("tool-only starter echoes and truncates long results without losing de
   const harness = createHarness();
   toolOnly(harness.pi);
 
-  const tool = harness.tools.get("myext_echo");
+  const tool = harness.tools.get("social-research_echo");
   const toolResult = handler(harness, "tool_result");
   assert.ok(tool);
   assert.match(tool.promptSnippet ?? "", /echo text back/i);
@@ -174,7 +174,7 @@ void test("tool-only starter echoes and truncates long results without losing de
   const longText = "😀".repeat(300);
   const truncated = toolResult(
     {
-      toolName: "myext_echo",
+      toolName: "social-research_echo",
       input: {},
       content: [{ type: "text", text: longText }],
       details: { length: 600, style: "quoted" },
@@ -202,7 +202,7 @@ void test("tool-only starter echoes and truncates long results without losing de
   assert.equal(
     toolResult(
       {
-        toolName: "myext_echo",
+        toolName: "social-research_echo",
         input: {},
         content: [{ type: "text", text: "short" }],
         details: { length: 5, style: "plain" },
@@ -217,7 +217,7 @@ void test("tool-only starter echoes and truncates long results without losing de
 void test("tool-only starter renders failed calls as errors, not successes", () => {
   const harness = createHarness();
   toolOnly(harness.pi);
-  const tool = harness.tools.get("myext_echo");
+  const tool = harness.tools.get("social-research_echo");
   assert.ok(tool);
 
   // What pi hands the renderer when validation fails, a tool_call hook blocks the call or the
@@ -241,7 +241,7 @@ void test("command-only starter command updates status and supports UI mode pick
   const harness = createHarness();
   commandOnly(harness.pi);
 
-  const command = harness.commands.get("myext");
+  const command = harness.commands.get("social-research");
   assert.ok(command);
 
   const ctx = createContext({ selectValue: "enabled" });
@@ -262,7 +262,7 @@ void test("command-only starter writes to stderr, not stdout, without a UI", asy
   const log = t.mock.method(console, "log", () => undefined);
   const error = t.mock.method(console, "error", () => undefined);
 
-  await harness.commands.get("myext")?.handler("mode", createContext({ hasUI: false }));
+  await harness.commands.get("social-research")?.handler("mode", createContext({ hasUI: false }));
 
   assert.equal(log.mock.callCount(), 0);
   assert.match(String(error.mock.calls[0]?.arguments[0]), /needs a UI/);
@@ -272,8 +272,8 @@ void test("hybrid starter registers command/tool/shortcut and command affects to
   const harness = createHarness();
   hybrid(harness.pi);
 
-  const command = harness.commands.get("myext");
-  const tool = harness.tools.get("myext_echo");
+  const command = harness.commands.get("social-research");
+  const tool = harness.tools.get("social-research_echo");
   const shortcut = harness.shortcuts.get("ctrl+shift+m");
 
   assert.ok(command);
@@ -299,14 +299,14 @@ void test("ui-only starter sets status and widget and counts turns in every mode
 
   const ctx = createContext({});
   await handler(harness, "session_start")({ type: "session_start", reason: "startup" }, ctx);
-  assert.equal(ctx.statuses.get("myext"), "Ready");
-  assert.ok(ctx.widgets.has("myext-hint"));
+  assert.equal(ctx.statuses.get("social-research"), "Ready");
+  assert.ok(ctx.widgets.has("social-research-hint"));
 
   const printCtx = createContext({ mode: "print", hasUI: false });
   await handler(harness, "turn_start")({ type: "turn_start" }, printCtx);
   await handler(harness, "turn_start")({ type: "turn_start" }, ctx);
   await handler(harness, "turn_end")({ type: "turn_end" }, ctx);
-  assert.equal(ctx.statuses.get("myext"), "Turn 2 ✓");
+  assert.equal(ctx.statuses.get("social-research"), "Turn 2 ✓");
   assert.ok(harness.shortcuts.has("ctrl+shift+m"));
 });
 
@@ -315,7 +315,7 @@ void test("ui-only starter falls back to a notification outside the TUI (RPC has
   uiOnly(harness.pi);
 
   const ctx = createContext({ mode: "rpc" });
-  await harness.commands.get("myext")?.handler("", ctx);
+  await harness.commands.get("social-research")?.handler("", ctx);
 
   assert.equal(ctx.customFactories.length, 0);
   assert.deepEqual(ctx.notifications, ["Turns: 0"]);
@@ -326,7 +326,7 @@ void test("ui-only dashboard fits narrow terminals and closes on the cancel keyb
   uiOnly(harness.pi);
 
   const ctx = createContext({ mode: "tui" });
-  await harness.commands.get("myext")?.handler("", ctx);
+  await harness.commands.get("social-research")?.handler("", ctx);
 
   const factory = ctx.customFactories[0];
   assert.ok(factory);
@@ -356,7 +356,7 @@ void test("ui-only dashboard follows the user's rebound cancel key", async (t) =
   uiOnly(harness.pi);
 
   const ctx = createContext({ mode: "tui" });
-  await harness.commands.get("myext")?.handler("", ctx);
+  await harness.commands.get("social-research")?.handler("", ctx);
   const factory = ctx.customFactories[0];
   assert.ok(factory);
 
