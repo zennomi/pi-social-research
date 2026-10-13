@@ -20,6 +20,7 @@
   "main": "./src/index.ts",
   "files": [
     "src/",
+    "skills/",
     "README.md",
     "CHANGELOG.md",
     "LICENSE"

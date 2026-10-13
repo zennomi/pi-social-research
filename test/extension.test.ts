@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import test from "node:test";
 import { type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
@@ -8,7 +10,7 @@ import {
   STATE_ENTRY_TYPE,
   TOOL_NAME,
 } from "../src/constants.js";
-import extensionTemplate from "../src/index.js";
+import extensionTemplate, { SKILLS_DIR } from "../src/index.js";
 
 type Handler = (event: unknown, ctx: unknown) => unknown;
 
@@ -121,6 +123,23 @@ void test("echo tool returns JSON-compatible details", async () => {
   });
 
   assert.deepEqual(result, { content: [{ type: "text", text: "HELLO" }], details: { length: 5 } });
+});
+
+void test("resources_discover exposes the bundled reddit skill", async () => {
+  const harness = createHarness();
+  extensionTemplate(harness.pi);
+
+  const handler = harness.handlers.get("resources_discover")?.[0];
+  const result = (await handler?.(
+    { type: "resources_discover", cwd: process.cwd(), reason: "startup" },
+    {}
+  )) as { skillPaths?: string[] } | undefined;
+
+  assert.deepEqual(result?.skillPaths, [SKILLS_DIR]);
+  const skillFile = join(SKILLS_DIR, "reddit-unofficial-api", "SKILL.md");
+  assert.ok(existsSync(skillFile));
+  assert.match(readFileSync(skillFile, "utf8"), /^---\nname: reddit-unofficial-api\n/);
+  assert.ok(existsSync(join(SKILLS_DIR, "reddit-unofficial-api", "scripts", "reddit-helper.js")));
 });
 
 function createHarness(): Harness {

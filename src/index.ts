@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import {
   type ExtensionAPI,
   type ExtensionContext,
@@ -14,6 +15,9 @@ import {
 import { buildEchoText, echoParameters } from "./tool.js";
 import { type ExtensionState } from "./types.js";
 
+/** Absolute path of the package's `skills/` directory (sibling of `src/`). */
+export const SKILLS_DIR = fileURLToPath(new URL("../skills", import.meta.url));
+
 export default function extensionTemplate(pi: ExtensionAPI) {
   let state: ExtensionState = { label: DEFAULT_LABEL };
 
@@ -23,6 +27,10 @@ export default function extensionTemplate(pi: ExtensionAPI) {
       ctx.ui.setStatus(EXTENSION_COMMAND, `${EXTENSION_NAME}: ${state.label}`);
     }
   }
+
+  // Ship the bundled skills (e.g. reddit-unofficial-api) with the extension, so they load
+  // whether pi picks the package up via `pi install` or a bare `pi -e ./src/index.ts`.
+  pi.on("resources_discover", () => ({ skillPaths: [SKILLS_DIR] }));
 
   pi.on("session_start", (_event, ctx) => syncState(ctx));
   pi.on("session_tree", (_event, ctx) => syncState(ctx));
