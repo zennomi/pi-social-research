@@ -52,6 +52,10 @@
   },
   "overrides": [
     {
+      "includes": ["test/fixtures/x/*.json"],
+      "formatter": { "enabled": false }
+    },
+    {
       "includes": ["test/**/*.ts"],
       "linter": {
         "rules": {

@@ -1,6 +1,6 @@
 ---
 name: reddit-unofficial-api
-description: Read Reddit without API keys through the logged-in browser session (pi browser_* tools). Get a post with its comment tree, get all comments as a flat list, browse a subreddit (hot/new/top/rising, about, rules), and search posts or subreddits. Use for Reddit research, sentiment or opinion gathering, competitor/product mentions, or whenever the user gives a reddit.com link.
+description: Use whenever the user asks to research, search, browse, or read Reddit (posts, comment threads, subreddits, opinions/sentiment, competitor or product mentions) or gives a reddit.com / redd.it link. Prefer this over codex_search, browser_web_search, or any "site:reddit.com" web search for Reddit content, because it returns full posts, complete comment trees, and scores via Reddit's .json endpoints instead of search snippets. No API key needed; runs in the browser session (call browser_setup first if the browser is not connected).
 compatibility: Requires pi-browser-harness (browser_navigate, browser_execute_js) and a Chrome tab that can reach www.reddit.com. Logging in is optional but gives better rate limits.
 ---
 

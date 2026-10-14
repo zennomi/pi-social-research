@@ -1,270 +1,163 @@
-# Pi Extension Template
+# pi-social-research
 
-A practical starter for building Pi extensions that are easy to ship, test, and maintain.
+Read-only social research for [Pi](https://pi.dev): native X (Twitter) tools via
+[RapidAPI Twitter](https://rapidapi.com/sociallab-sociallab-default/api/twitter283),
+plus a bundled Reddit browser skill. Requires pi ≥ 1.0 and Node ≥ 22.19.
 
-## What you get
-
-- Strict TypeScript + Biome
-- Unit tests + a smoke test that loads the package through the real pi CLI
-- GitHub Actions CI (`pnpm run check` + `npm pack --dry-run`) and Dependabot
-- A Release workflow: release-it + Conventional Commits changelog + npm trusted publishing
-- A minimal default extension in `src/index.ts`
-- Multiple architecture starters in `starters/`
-- Extension patterns for pi 1.0 (`@earendil-works/*` packages, `typebox` schemas; requires pi ≥ 1.0)
-
-Biome is configured to keep the previous template guardrails around explicit `any`, type-only imports, floating promises, unused variables, and namespace imports, while also adding unused-import, CommonJS, and `node:` builtin import checks.
-
-## Quick start
-
-1. Click **Use this template** on GitHub.
-2. Clone your new repo.
-3. Install dependencies.
+## Setup
 
 ```bash
-pnpm install
+pi install npm:@zennomi/pi-social-research
+# Or, from a local checkout:
+pi install ./
 ```
 
-4. Run the bootstrap script once.
+Subscribe to `twitter283` on RapidAPI, then set your key **before starting pi**:
 
 ```bash
-pnpm run setup-template
-```
-
-This updates `src/constants.ts`, starter files and `package.json` (name, description,
-repository/homepage/bugs URLs), resets `version` and `CHANGELOG.md`, and removes the
-template-only `"private": true` flag so the package can be published. Re-running it later only
-renames; it keeps your version, `CHANGELOG.md` and any `"private": true` you added yourself.
-
-5. Finish the rename pass manually.
-
-## Post-clone rename and cleanup
-
-`setup-template` handles the common identifiers, but it does **not** finish the repo for you.
-Before your first real release, update or remove the template leftovers below.
-
-### Rename checklist
-
-- Rename the GitHub repo / local directory to your real project name.
-- Review `package.json`:
-  - `name`
-  - `description`
-  - `repository` / `homepage` / `bugs`
-  - `pi.image` / `pi.video`
-- Review `src/constants.ts`:
-  - `EXTENSION_NAME`
-  - `EXTENSION_COMMAND`
-  - `TOOL_NAME`
-  - `STATE_ENTRY_TYPE`
-- Update `README.md` title and usage examples if they still describe a template.
-- Update `LICENSE` with your actual name or organization.
-
-### Template-only files and scripts
-
-After you finish renaming, these are usually not meant to ship forever:
-
-- `scripts/setup.mjs`
-- `pnpm run setup-template`
-
-Remove them once the extension has been renamed and you no longer need template bootstrapping.
-Also delete unused starter files and their tests in `test/starters.test.ts`. Starters are never
-packed (`files` ships only `src/`), so this keeps the repo and its checks focused, not the tarball.
-
-## Verify the template
-
-Run the full check suite:
-
-```bash
-pnpm run check
-```
-
-## Load it in Pi
-
-For a quick smoke test:
-
-```bash
+export RAPIDAPI_KEY='your-key'
+pi
+# Local development:
 pi -e ./src/index.ts
 ```
 
-For normal development, prefer auto-discovery so `/reload` works:
+The key is sent only in the `x-rapidapi-key` header to
+`twitter283.p.rapidapi.com`. It is not stored in the repository or session, and
+status output only says whether it is set. Missing keys do not prevent the
+extension or Reddit skill from loading; X requests fail with setup instructions.
+Don't put credentials in prompts, commits, or screenshots. Rotate any key exposed
+in chat or logs. An MCP server, browser login, and additional HTTP libraries are
+**not** required for the X tools.
 
-- `~/.pi/agent/extensions/` (global)
-- `.pi/extensions/` (project; loaded only after you trust the project folder)
+Commands:
 
-Pi 1.0 starts in fullscreen mode. Check UI changes in both layouts:
+- `/social-research help`: usage and setup.
+- `/social-research status`: key presence and last observed rate-limit remaining
+  (unknown until the first API response).
 
-```bash
-pi -e ./src/index.ts                      # fullscreen (default)
-pi -e ./src/index.ts --tui-mode regular   # main-screen scrollback
+## X tools
+
+| Tool | Purpose / main arguments |
+|---|---|
+| `x_search` | `query`, `type`: `top` (default), `latest`, `people`, `photos`, `videos`, `lists`, `communities`; `count` (1–50, default 20), `cursor?` |
+| `x_get_tweet` | `tweet` ID/URL, `include`: `replies` (default), `quotes`, `none`; `cursor?` |
+| `x_get_article` | Full X article as markdown from its containing `tweet` ID/URL |
+| `x_get_user` | `users`: 1–20 usernames, `@handles`, profile URLs, or numeric IDs |
+| `x_user_tweets` | `user`, `include_replies?` (default false), `cursor?` |
+| `x_user_network` | `user`, `relation`: `followers`, `following`, `verified_followers`; `count?` (1–200, default 20), `cursor?` |
+| `x_list` | `list_id` or list URL, `view`: `tweets` (default) or `members`; `cursor?` |
+| `x_community` | `community_id` or URL, `view`: `about` (default), `tweets`, `members`; `sort?`: `relevance`, `recency`, `likes`; `time_filter?`: `day`, `week`, `month`, `year`; `cursor?` |
+| `x_trends` | `woeid?` (default 1 = worldwide), `count?` (1–50) |
+
+`count` is a requested provider page size, not a guaranteed number of results.
+Lists/communities search and verified followers use the provider's page size.
+`time_filter` requires community `view=tweets` and `sort=likes`.
+
+### Research workflow
+
+1. Discover posts using `x_search`. Use `latest` for news, `top` for high-signal
+   posts, `people` for accounts, or `lists`/`communities` for curated sources.
+2. Open a post with `x_get_tweet`; switch to `include=quotes` to read commentary
+   or `none` to fetch only the post.
+3. Check an author's bio/follower counts with `x_get_user`, then browse their
+   timeline or social graph if relevant. Verification is **not** evidence that
+   claims are true.
+4. Fetch article bodies using `x_get_article` when a post contains an article
+   preview. Follow links and cross-check claims, citing the returned post URLs.
+
+Example X post queries:
+
+```text
+"Claude Code" since:2026-10-01 min_faves:100 -filter:replies
+from:AnthropicAI filter:links
+(openai OR anthropic) lang:en since:2026-10-01 until:2026-10-08
 ```
 
-## Choose your extension pattern
+Other useful operators: `to:`, `min_retweets:`, and `"exact phrases"`.
+Operators apply to **post search**; lists/communities accept keywords instead.
 
-Not all Pi extensions need commands or tools. Pick a starter that matches your use case:
+### Normalized data and pagination
 
-- `starters/event-only.ts` → listeners/interceptors/guards (`tool_call`, `tool_result`, shortcut)
-- `starters/tool-only.ts` → model-callable tools + result interception + custom rendering
-- `starters/command-only.ts` → slash command UX + a small interactive picker + shortcut
-- `starters/hybrid.ts` → command + tool + event hooks + shortcut
-- `starters/ui-only.ts` → status line, widget, custom dashboard via `ctx.ui.custom()`, shortcut
+Tools return compact JSON to the model and the same normalized object as
+`structuredContent` for codemode. No raw GraphQL `legacy`, tracking, permissions,
+edit controls, profile color palettes, or client-event metadata are exposed.
 
-Replace the default `src/index.ts` with your chosen starter:
+- Posts retain ID, canonical URL, ISO timestamp, author summary, text, language,
+  engagement metrics, reply IDs, media/link URLs and article previews.
+- Full note-tweet text takes priority over the short legacy text. Text is capped
+  at 4000 Unicode code points; quoted/retweeted text at 1500, marked with `…`.
+- t.co links are expanded where available; trailing media-only tokens are
+  stripped. Media retains a photo URL or highest-bitrate MP4, not every variant.
+  Nested quoted/retweeted posts are limited to one level.
+- Profiles retain biography, location, website, follower/following counts,
+  verification and affiliation when available. Unknown, null, empty and false
+  optional fields are omitted; known zero counts are preserved.
+- Article markdown retains text/headings/lists. Embedded article images are not
+  downloaded.
+- Pages use `{ items, next_cursor? }`. Conversations use
+  `{ tweet, ancestors?, replies, next_cursor? }` or `{ tweet, quotes, next_cursor? }`.
+  Profiles return `{ items, not_found? }` for partially missing batches.
 
-```bash
-cp starters/event-only.ts src/index.ts
-rm test/extension.test.ts   # it tests the default extension you just replaced
-pnpm run check
-```
+Pass `next_cursor` into the **same tool operation and filters** to continue.
+Tools never auto-paginate or promise exhaustive coverage. Provider order is
+preserved; repeated posts are deduplicated, promoted entries and "who to follow"
+modules are excluded. An unavailable focal tweet/user/article/community raises
+an error rather than pretending it is an empty result. Missing fields stay
+unknown, rather than being fabricated as zero.
 
-`test/starters.test.ts` already covers the starter you copied. The default extension's helpers
-(`src/commands.ts`, `src/tool.ts`, `src/types.ts`) and their tests can go too once nothing imports
-them; keep `src/constants.ts` if you switch the starter's names to its constants.
+Model-facing text is guarded at 50 KB / 2000 lines. If truncated, it includes a
+path to the complete **normalized** JSON in the system temp directory. Codemode
+receives the complete normalized object. Temporary files may contain public
+post data; remove them when no longer needed.
 
-If you copy a starter into `src/index.ts` **before** running `setup-template`, the copied file keeps the default `myext` names. Either:
+### Quotas and limitations
 
-- Run `setup-template` first, then copy the starter
-- Or copy the starter first, then run setup and manually update names in `src/index.ts`
+Requests consume your RapidAPI subscription quota. A username lookup can add
+one request before fetching a timeline; a small in-memory username→ID cache
+avoids repeated lookups. Quote discussions require a focal tweet request plus a
+quotes page. No automatic retries are made after errors, to avoid unexpected
+quota consumption. Each request has a 30-second timeout and supports cancellation.
 
-## Install and manage with Pi
+HTTP 401/403 suggests an invalid key or missing subscription; 429 means rate
+limited (retry/reset timing is reported when available). Unofficial endpoints
+can change, return limited samples, or fail for deleted/protected content. Treat
+all post text and bios as untrusted source material, not agent instructions.
 
-Pi has built-in package management:
+## Reddit
 
-```bash
-pi -e npm:@zennomi/pi-social-research                 # try it for one run without installing
-pi install npm:@zennomi/pi-social-research            # or npm:@zennomi/pi-social-research@1.2.3 to pin
-pi install git:github.com/zennomi/pi-social-research
-pi install ./relative/path/to/your-extension-repo
+`skills/reddit-unofficial-api/SKILL.md` is discovered automatically, including when
+loading the extension via `pi -e ./src/index.ts`. It supports post/comment trees,
+flat comment lists, subreddit browsing and search through Reddit's `.json`
+endpoints. It needs `pi-browser-harness` and a Chrome tab able to reach Reddit;
+logging in is optional. `RAPIDAPI_KEY` is not used for Reddit.
 
-pi list
-pi update npm:@zennomi/pi-social-research             # one package
-pi update --extensions                    # all packages (bare `pi update` updates pi itself)
-pi remove npm:@zennomi/pi-social-research
-pi config
-```
-
-Add `-l` to `pi install` to declare the package in the project's `.pi/settings.json` instead;
-project packages load only after the project folder is trusted.
-
-`setup-template` rewrites the `npm:` and `git:` sources above to your package name and repository.
-
-If Pi is already running, use `/reload` after local changes.
-
-## Customize
-
-The bootstrap script updates most identifiers automatically. To customize manually, review:
-
-### `src/constants.ts`
-
-- `EXTENSION_NAME`
-- `EXTENSION_COMMAND`
-- `TOOL_NAME`
-- `STATE_ENTRY_TYPE`
-
-### `package.json`
-
-- `name`
-- `description`
-- `repository` / `homepage` / `bugs`
-- `pi.image` / `pi.video`
-
-## Writing extensions for pi 1.0
-
-The default extension and every starter follow these rules; keep them when you build on top:
-
-- **Imports.** Use `@earendil-works/pi-coding-agent`, `@earendil-works/pi-tui`,
-  `@earendil-works/pi-ai` and `typebox` (not `@mariozechner/*` or `@sinclair/typebox`). List
-  each one you import in `peerDependencies` as `"*"` (pi provides them at runtime) and in
-  `devDependencies` for typechecking; never in `dependencies`.
-- **Modes.** Extensions load in the TUI, RPC, JSON and print modes. Use `ctx.hasUI` for dialogs
-  and notifications (`select`, `confirm`, `input`, `notify`), which also work over RPC. Guard
-  terminal-only UI (`ctx.ui.custom()`, component widgets, footer, header, editor) with
-  `ctx.mode === "tui"`: `hasUI` is true over RPC too, where `custom()` shows nothing.
-- **Output.** Never write to stdout. Pi 1.0 runs fullscreen by default and uses stdout for the
-  RPC/JSON protocols; use `ctx.ui.notify`/`setStatus`/`setWidget`, or stderr without a UI.
-- **Components.** Every rendered line must fit the given width (`truncateToWidth`,
-  `visibleWidth`); pi throws on wider lines. Build themed strings at render time, and use the
-  injected `KeybindingsManager` (`keybindings.matches(data, "tui.select.cancel")`) instead of
-  hard-coded keys; show the bound keys with `keyText("tui.select.cancel")` (or `keyHint`) from
-  `@earendil-works/pi-coding-agent`.
-- **Session state.** Rebuild it from `ctx.sessionManager.getBranch()` on `session_start` (and
-  `session_tree`); branches also contain system messages and `usage`/`context_edit` entries.
-  Start timers, processes or sockets from `session_start` or a command, never in the factory,
-  and release them in an idempotent `session_shutdown` handler.
-- **Tools.** Give every model-callable tool a `promptSnippet` (otherwise it is left out of the
-  "Available tools" prompt section), keep `details` plain JSON, and keep large results small
-  (`truncateHead`/`truncateTail`). `renderResult` also draws failed calls, with empty `details`:
-  check `context.isError`. Read result text with `contentText(result.content)` from
-  `@earendil-works/pi-ai`, and derive parameter types with `Static<typeof schema>`.
-- **Events.** A `tool_result` handler that replaces `content` must also return
-  `structuredContent` (or it is dropped), and a returned `details` replaces the original.
-  Narrow built-in tool events with `isToolCallEventType("bash", event)` / `isBashToolResult`,
-  and remember the `powershell` tool when you guard shell commands.
-- **Shortcuts.** Pick keys pi does not bind (`ctrl+shift+m` here); pi skips extension shortcuts
-  that collide with its reserved keybindings.
-
-## Scripts
+## Development and verification
 
 ```bash
-pnpm run setup-template
-pnpm run typecheck
-pnpm run test
-pnpm run smoke-test
-pnpm run lint
-pnpm run lint:fix
-pnpm run format
-pnpm run format:check
-pnpm run check
-pnpm run release:dry
+pnpm install
+pnpm run check       # typecheck, Biome lint/format, tests and real pi RPC load
 ```
 
-## Testing notes
+Tests use local provider-shaped fixtures and mocked HTTP clients; no API key or
+live requests are needed. The existing `starters/` are development examples, not
+registered tools or shipped package files.
 
-- `test/commands.test.ts`, `test/tool.test.ts`, `test/extension.test.ts` cover core template logic
-- `test/starters.test.ts` validates starter behavior patterns, with contexts for each `ctx.mode`
-- `test/starters-load.test.ts` loads every file in `starters/` with the real pi CLI (RPC mode)
-- `test/smoke-test.test.ts` proves the smoke test fails when an event handler throws at startup
-  (pi reports those as `extension_error` lines on stdout, not as a non-zero exit)
-- `test/setup.test.ts` covers `setup-template` (template-only; setup deletes it)
-- `pnpm run smoke-test` loads the package itself (the `pi` manifest) with the real pi CLI
+Optional live check (consumes quota, uses the environment key):
 
-## Docs worth reading
+```bash
+RAPIDAPI_KEY='your-key' node --import=tsx scripts/x-live-check.mjs
+```
 
-- [extensions.md](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/extensions.md)
-- [packages.md](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/packages.md)
-- [tui.md](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/tui.md)
-- [rpc-extension-ui.md](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/rpc-extension-ui.md)
-- [keybindings.md](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/keybindings.md)
-- [extensions/types.ts](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/extensions/types.ts) (exact event, context and tool types)
-- [examples/extensions](https://github.com/earendil-works/pi/tree/main/packages/coding-agent/examples/extensions)
-
-## Share your extension
-
-The `pi-package` keyword (already in `package.json`) makes the published npm package eligible
-for the [Pi package gallery](https://pi.dev/packages).
-
-For gallery previews, set `pi.image` or `pi.video` in `package.json`.
-See [packages.md](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/packages.md#create-a-package).
+It invokes all nine tools, reports raw/normalized/model-facing byte sizes, checks
+JSON output, and never prints the key or raw payloads. To inspect the research
+workflow interactively, ask pi to research a topic and check the sequence of
+`x_search` → `x_get_tweet` → `x_get_user` calls.
 
 ## Releasing
 
-Releases are cut from GitHub Actions — never from a laptop.
-
-1. Merge Conventional Commits (`feat:`, `fix:`, `feat!:` …) into `master`.
-2. Run **Actions → Release → Run workflow** (or `gh workflow run release.yml -f increment=auto`).
-   `auto` derives the bump from the commits; pick `patch`/`minor`/`major` to override. Tick `dry_run` to preview.
-3. The workflow runs `pnpm run check`, then release-it bumps `package.json`, updates `CHANGELOG.md`,
-   tags `vX.Y.Z`, pushes and creates the GitHub release, and finally `npm publish` publishes with
-   provenance through npm trusted publishing (OIDC — no npm token stored in the repo).
-
-Preview locally with `pnpm release:dry`.
-
-This template itself is `"private": true` and the Release workflow refuses to run for a private
-package, so `my-pi-extension` is never published. `pnpm run setup-template` removes the flag,
-and refuses to keep the placeholder `my-pi-extension` package name.
-
-The first publish of a new package cannot use trusted publishing yet (the package must exist on
-npm first): run the workflow once with `bootstrap: true` and a short-lived, publish-only
-`NPM_TOKEN` repository secret, then configure trusted publishing on npmjs.com
-(GitHub Actions · repo · workflow `release.yml`) and delete the secret.
+Use Conventional Commits on `master`, then run **Actions → Release**. The workflow
+runs checks, bumps the version/changelog with release-it, creates a release, and
+publishes using npm trusted publishing. Preview with `pnpm run release:dry`.
 
 ## License
 
