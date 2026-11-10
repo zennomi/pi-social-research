@@ -1,0 +1,36 @@
+{
+  "data": {
+    "tweet_results": {
+      "rest_id": "123",
+      "result": {
+        "__typename": "TweetWithVisibilityResults",
+        "media_visibility_results": {
+          "blurred_image_interstitial": {
+            "text": {
+              "text": "Synthetic visibility wrapper"
+            }
+          }
+        },
+        "tweet": {
+          "rest_id": "123",
+          "legacy": {
+            "full_text": "Synthetic wrapped tweet",
+            "possibly_sensitive": true
+          },
+          "core": {
+            "user_results": {
+              "result": {
+                "__typename": "User",
+                "rest_id": "456",
+                "core": {
+                  "screen_name": "sample",
+                  "name": "Sample"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

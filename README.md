@@ -2,6 +2,7 @@
 
 Read-only social research for [Pi](https://pi.dev): native X (Twitter) tools via
 [RapidAPI Twitter](https://rapidapi.com/sociallab-sociallab-default/api/twitter283),
+with an optional [TweetAPI](https://tweetapi.com/docs/explore/search) search fallback,
 plus a bundled Reddit browser skill. Requires pi ≥ 1.0 and Node ≥ 22.19.
 
 ## Setup
@@ -16,6 +17,7 @@ Subscribe to `twitter283` on RapidAPI, then set your key **before starting pi**:
 
 ```bash
 export RAPIDAPI_KEY='your-key'
+export TWEETAPI_KEY='your-tweetapi-key' # optional, top/latest search fallback only
 pi
 # Local development:
 pi -e ./src/index.ts
@@ -32,8 +34,12 @@ in chat or logs. An MCP server, browser login, and additional HTTP libraries are
 Commands:
 
 - `/social-research help`: usage and setup.
-- `/social-research status`: key presence and last observed rate-limit remaining
-  (unknown until the first API response).
+- `/social-research status`: presence of both keys and last observed twitter283
+  rate-limit remaining (unknown until the first API response).
+
+`TWEETAPI_KEY` is sent only as `X-API-Key` to `api.tweetapi.com`, never in URLs
+or status output. Both clients refuse redirects. Set keys in the environment
+before starting/restarting pi; no `.env` file is loaded automatically.
 
 ## X tools
 
@@ -63,7 +69,9 @@ Lists/communities search and verified followers use the provider's page size.
    timeline or social graph if relevant. Verification is **not** evidence that
    claims are true.
 4. Fetch article bodies using `x_get_article` when a post contains an article
-   preview. Follow links and cross-check claims, citing the returned post URLs.
+   preview. Pass **the containing tweet's `id`/status URL**, not `article.id` or
+   an `x.com/i/article/<id>` URL. Follow links and cross-check claims, citing the
+   returned post URLs. `x_search.type` is `top` or `latest` for posts, never `posts`.
 
 Example X post queries:
 
@@ -83,7 +91,9 @@ Tools return compact JSON to the model and the same normalized object as
 edit controls, profile color palettes, or client-event metadata are exposed.
 
 - Posts retain ID, canonical URL, ISO timestamp, author summary, text, language,
-  engagement metrics, reply IDs, media/link URLs and article previews.
+  engagement metrics, reply IDs, media/link URLs and article previews (with their
+  separate `article.id`, when available). Visibility-wrapped posts work with
+  standalone (`include=none`) and quotes lookups as well as conversations.
 - Full note-tweet text takes priority over the short legacy text. Text is capped
   at 4000 Unicode code points; quoted/retweeted text at 1500, marked with `…`.
 - t.co links are expanded where available; trailing media-only tokens are
@@ -110,13 +120,39 @@ path to the complete **normalized** JSON in the system temp directory. Codemode
 receives the complete normalized object. Temporary files may contain public
 post data; remove them when no longer needed.
 
+### Search fallback and empty pages
+
+With `TWEETAPI_KEY` configured, only `top/latest` first-page search falls back
+from twitter283 to TweetAPI after network, 5xx, invalid JSON/upstream errors
+(still failing after one retry), or 401/403/429. No fallback occurs on empty
+results, invalid inputs, cancellation/timeouts, or other search types. Other X
+tools remain on twitter283 and still need `RAPIDAPI_KEY`.
+
+Fallback results carry `provider: "tweetapi"` and a `notice`. TweetAPI accepts
+queries of 1–512 characters and uses its own page size (~20); `count` is ignored,
+not used to discard fetched posts. Each page costs one TweetAPI unit.
+Its `next_cursor` has an opaque `tweetapi:` prefix: pass the **whole string**
+back with the same query and type. Continuation goes directly to TweetAPI.
+A twitter283 cursor is never sent to TweetAPI; if that page fails, restart the
+search without a cursor (results may overlap). A first page with zero items
+keeps its cursor and adds a notice about incomplete coverage/degradation;
+zero results do not prove no matching posts exist.
+
+When both providers fail, the error names both failures. Missing TweetAPI
+credentials produce a setup hint. TweetAPI quota/subscription errors require
+account action, not repeated requests. Without a fallback, use known post URLs
+with `x_get_tweet`, account timelines with `x_user_tweets`, or web search.
+
 ### Quotas and limitations
 
 Requests consume your RapidAPI subscription quota. A username lookup can add
 one request before fetching a timeline; a small in-memory username→ID cache
 avoids repeated lookups. Quote discussions require a focal tweet request plus a
-quotes page. No automatic retries are made after errors, to avoid unexpected
-quota consumption. Each request has a 30-second timeout and supports cancellation.
+quotes page. twitter283 transient failures retry **once** after ~1 second of
+abortable jittered backoff; 4xx/429 do not retry. TweetAPI retries 503 once only
+when a numeric `Retry-After` is at most 5 seconds. Each provider call has a
+30-second deadline covering attempts, backoff and body reads, and supports
+cancellation. Retries/fallback may consume additional provider quota.
 
 HTTP 401/403 suggests an invalid key or missing subscription; 429 means rate
 limited (retry/reset timing is reported when available). Unofficial endpoints
@@ -148,8 +184,13 @@ Optional live check (consumes quota, uses the environment key):
 RAPIDAPI_KEY='your-key' node --import=tsx scripts/x-live-check.mjs
 ```
 
-It invokes all nine tools, reports raw/normalized/model-facing byte sizes, checks
-JSON output, and never prints the key or raw payloads. To inspect the research
+It invokes all nine tools plus a visibility-wrapper regression, reports
+raw/normalized/model-facing byte sizes, checks JSON output, and never prints
+keys or raw payloads. With `TWEETAPI_KEY` also set, it additionally exercises
+real Top/Latest fallback searches against a simulated primary outage and one
+continuation page when available. Failures are collected so one unavailable
+endpoint does not prevent the remaining checks; any failure makes the exit
+status nonzero. To inspect the research
 workflow interactively, ask pi to research a topic and check the sequence of
 `x_search` → `x_get_tweet` → `x_get_user` calls.
 

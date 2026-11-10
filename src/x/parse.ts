@@ -36,6 +36,8 @@ function parseId(input: string, pattern: RegExp, kind: string): string {
 }
 
 export function parseTweetId(input: string): string {
+  if (/^\/i\/article\/\d+(?:\/.*)?$/.test(path(input) ?? ""))
+    throw new Error("X article URL: pass the tweet that contains the article.");
   return parseId(input, /^\/(?:[A-Za-z0-9_]+|i\/web)\/status\/(\d+)(?:\/.*)?$/, "tweet");
 }
 

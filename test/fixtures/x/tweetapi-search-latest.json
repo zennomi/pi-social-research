@@ -1,0 +1,86 @@
+{
+  "data": [
+    {
+      "id": "101",
+      "text": "Synthetic TweetAPI post",
+      "conversationId": "100",
+      "createdAt": "2026-01-01T00:00:00Z",
+      "author": {
+        "id": "10",
+        "username": "sample",
+        "name": "Sample",
+        "isBlueVerified": true,
+        "followerCount": 0
+      },
+      "lang": "en",
+      "likeCount": 0,
+      "retweetCount": 2,
+      "replyCount": 3,
+      "quoteCount": 4,
+      "bookmarkCount": 5,
+      "viewCount": 6,
+      "replyTo": {
+        "tweetId": "100",
+        "username": "parent"
+      },
+      "urls": [
+        "https://example.com",
+        "https://example.com"
+      ],
+      "media": [
+        {
+          "type": "photo",
+          "url": "https://example.com/photo.jpg"
+        },
+        {
+          "type": "video",
+          "url": "https://example.com/poster.jpg",
+          "duration": 2.5,
+          "videoInfo": {
+            "variants": [
+              {
+                "content_type": "video/mp4",
+                "bitrate": 20,
+                "url": "https://example.com/high.mp4"
+              },
+              {
+                "content_type": "video/mp4",
+                "bitrate": 10,
+                "url": "https://example.com/low.mp4"
+              },
+              {
+                "content_type": "application/x-mpegURL",
+                "url": "https://example.com/hls"
+              }
+            ]
+          }
+        },
+        {
+          "type": "animated_gif",
+          "url": "https://example.com/gif.mp4"
+        }
+      ],
+      "article": {
+        "id": "90",
+        "title": "Article",
+        "previewText": "Preview"
+      },
+      "quotedTweet": {
+        "id": "102",
+        "text": "Quoted",
+        "quotedTweet": {
+          "id": "104",
+          "text": "Too deep"
+        }
+      },
+      "retweetedTweet": {
+        "id": "103",
+        "text": "Original"
+      }
+    }
+  ],
+  "pagination": {
+    "nextCursor": "opaque+/=cursor",
+    "prevCursor": null
+  }
+}

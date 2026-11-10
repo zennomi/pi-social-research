@@ -7,8 +7,9 @@ import { type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type TSchema } from "typebox";
 import { Check } from "typebox/value";
 import { X_TOOL_NAMES } from "../src/constants.js";
-import { type Query, type XClient } from "../src/x/client.js";
+import { createXClient, type Query, XApiError, type XClient } from "../src/x/client.js";
 import { formatXResult, registerXTools } from "../src/x/tools.js";
+import { type TweetApiClient, TweetApiError } from "../src/x/tweetapi.js";
 
 function fixture(name: string): unknown {
   return JSON.parse(readFileSync(new URL(`./fixtures/x/${name}.json`, import.meta.url), "utf8"));
@@ -45,13 +46,18 @@ const mapping: Record<string, string> = {
   "/CommunityMembers": "commmembers",
   "/Trends": "trends",
 };
-function harness(overrides: Record<string, unknown> = {}) {
+function harness(
+  overrides: Record<string, unknown> = {},
+  fallback?: TweetApiClient,
+  clientOverride?: XClient
+) {
   const tools = new Map<string, Tool>();
   const calls: { endpoint: string; query: Query; signal: AbortSignal | undefined }[] = [];
   const client: XClient = {
     rateLimit: { remaining: 42 },
     async get(endpoint, query, signal) {
       calls.push({ endpoint, query, signal });
+      if (overrides[endpoint] instanceof Error) throw overrides[endpoint];
       return Object.hasOwn(overrides, endpoint)
         ? overrides[endpoint]
         : fixture(mapping[endpoint] ?? "empty-tweet");
@@ -64,7 +70,8 @@ function harness(overrides: Record<string, unknown> = {}) {
     {
       registerTool: (tool: { name: string }) => tools.set(tool.name, tool as unknown as Tool),
     } as unknown as ExtensionAPI,
-    () => client
+    () => clientOverride ?? client,
+    () => fallback
   );
   const run = async (name: string, params: unknown, signal?: AbortSignal) => {
     const tool = tools.get(name);
@@ -73,7 +80,10 @@ function harness(overrides: Record<string, unknown> = {}) {
     const result = await tool.execute("call", params, signal);
     assert.equal(Check(tool.outputSchema, result.structuredContent), true);
     assert.deepEqual(JSON.parse(result.content[0].text), result.structuredContent);
-    assert.equal(result.details.rate_limit_remaining, 42);
+    if (result.structuredContent.provider === "tweetapi") {
+      assert.equal(result.details.provider, "tweetapi");
+      assert.equal(result.details.rate_limit_remaining, undefined);
+    } else if (!clientOverride) assert.equal(result.details.rate_limit_remaining, 42);
     return result.structuredContent;
   };
   return { tools, calls, run };
@@ -122,6 +132,136 @@ void test("search dispatches posts, people, lists and communities and propagates
   );
 });
 
+void test("empty first search page warns without losing its opaque cursor", async () => {
+  const h = harness({
+    "/Search": {
+      instructions: [{ entries: [{ content: { cursorType: "Bottom", value: "sparse-next" } }] }],
+    },
+  });
+  const first = await h.run("x_search", { query: "old posts" });
+  assert.deepEqual(first.items, []);
+  assert.equal(first.next_cursor, "sparse-next");
+  assert.match(first.notice, /does not prove no posts exist/);
+  assert.match(first.notice, /x_user_tweets/);
+  const next = await h.run("x_search", { query: "old posts", cursor: first.next_cursor });
+  assert.equal(next.notice, undefined);
+  assert.equal((await harness().run("x_search", { query: "ai" })).notice, undefined);
+});
+
+void test("search retries primary then falls back, and continuation stays on TweetAPI", async () => {
+  let primaryCalls = 0;
+  const fallbackCalls: unknown[][] = [];
+  const primary = createXClient({
+    apiKey: "key",
+    fetch: async () => {
+      primaryCalls++;
+      return new Response("", { status: 500 });
+    },
+  });
+  const controller = new AbortController();
+  const fallback: TweetApiClient = {
+    search: async (...args) => {
+      fallbackCalls.push(args);
+      return {
+        items: [{ id: "1", url: "https://x.com/sample/status/1", text: "test", metrics: {} }],
+        next_cursor: "opaque+/=",
+      };
+    },
+  };
+  const h = harness({}, fallback, primary);
+  const first = await h.run(
+    "x_search",
+    { query: "ai", type: "latest", count: 1 },
+    controller.signal
+  );
+  assert.equal(primaryCalls, 2);
+  assert.equal(first.provider, "tweetapi");
+  assert.match(first.notice, /twitter283 search failed.*count is ignored/);
+  assert.equal(first.next_cursor, "tweetapi:opaque+/=");
+  assert.deepEqual(fallbackCalls[0], ["ai", "Latest", undefined, controller.signal]);
+  const second = await h.run("x_search", {
+    query: "ai",
+    type: "latest",
+    cursor: first.next_cursor,
+  });
+  assert.equal(primaryCalls, 2);
+  assert.match(second.notice, /Continuing/);
+  assert.deepEqual(fallbackCalls[1], ["ai", "Latest", "opaque+/=", undefined]);
+  const raw = await h.tools
+    .get("x_search")
+    ?.execute("c", { query: "ai", cursor: "tweetapi:opaque" });
+  assert.equal(raw.details.provider, "tweetapi");
+  assert.equal(raw.details.endpoint, "TweetAPI /tw-v2/search");
+});
+
+void test("fallback failures are actionable; all eligibility and cursor boundaries are enforced", async () => {
+  const outage = new XApiError("X API HTTP 500 for /Search.", true, 500);
+  await assert.rejects(
+    harness({ "/Search": outage }).run("x_search", { query: "ai" }),
+    /HTTP 500.*Set TWEETAPI_KEY/
+  );
+  const failing: TweetApiClient = {
+    search: async () => {
+      throw new TweetApiError("HTTP 429 QUOTA_EXHAUSTED");
+    },
+  };
+  await assert.rejects(
+    harness({ "/Search": outage }, failing).run("x_search", { query: "ai" }),
+    /twitter283:.*HTTP 500.*TweetAPI:.*QUOTA_EXHAUSTED/
+  );
+  let calls = 0;
+  const fallback: TweetApiClient = {
+    search: async () => {
+      calls++;
+      return { items: [] };
+    },
+  };
+  for (const type of ["people", "photos", "videos", "lists", "communities"]) {
+    const h = harness(
+      { "/Search": outage, "/ListSearch": outage, "/CommunitiesSearchSlice": outage },
+      fallback
+    );
+    await assert.rejects(h.run("x_search", { query: "ai", type }), (error) => error === outage);
+    await assert.rejects(
+      h.run("x_search", { query: "ai", type, cursor: "tweetapi:abc" }),
+      /same top/
+    );
+  }
+  for (const error of [
+    new Error("bug"),
+    new XApiError("HTTP 400", false, 400),
+    new DOMException("aborted", "AbortError"),
+  ]) {
+    await assert.rejects(
+      harness({ "/Search": error }, fallback).run("x_search", { query: "ai" }),
+      (e) => e === error
+    );
+  }
+  const h = harness({ "/Search": outage }, fallback);
+  await assert.rejects(
+    h.run("x_search", { query: "ai", cursor: "twitter283-cursor" }),
+    /restart the search without cursor/
+  );
+  await assert.rejects(h.run("x_search", { query: "ai", cursor: "tweetapi:" }), /non-empty cursor/);
+  const controller = new AbortController();
+  controller.abort(new Error("cancelled"));
+  await assert.rejects(h.run("x_search", { query: "ai" }, controller.signal), /cancelled/);
+  assert.equal(calls, 0);
+  for (const status of [401, 403, 429, 200]) {
+    const data = await harness(
+      { "/Search": new XApiError("failure", status === 200, status) },
+      fallback
+    ).run("x_search", { query: "ai" });
+    assert.equal(data.provider, "tweetapi");
+    assert.equal(data.next_cursor, undefined);
+    assert.match(data.notice, /No results/);
+  }
+  const before = calls;
+  await harness({ "/Search": { instructions: [] } }, fallback).run("x_search", { query: "ai" });
+  await harness({}, fallback).run("x_search", { query: "ai" });
+  assert.equal(calls, before, "empty/successful primary must not fall back");
+});
+
 void test("tweet includes replies, quotes or standalone detail, with not-found errors", async () => {
   const h = harness();
   const tweet = "1768778186186195177";
@@ -141,6 +281,43 @@ void test("tweet includes replies, quotes or standalone detail, with not-found e
   await assert.rejects(missing.run("x_get_tweet", { tweet: "1" }), /not found/);
   const secondPage = harness({ "/TweetDetailConversation": { instructions: [] } });
   assert.equal((await secondPage.run("x_get_tweet", { tweet, cursor: "next" })).tweet.id, tweet);
+});
+
+void test("wrapped detail without inner typename works for none and quotes", async () => {
+  const h = harness({ "/TweetDetailv3": fixture("detailv3-sensitive") });
+  for (const include of ["none", "quotes"]) {
+    const result = await h.run("x_get_tweet", { tweet: "123", include });
+    assert.equal(result.tweet.id, "123");
+    assert.equal(result.tweet.text, "Synthetic wrapped tweet");
+    assert.equal(result.tweet.author.username, "sample");
+  }
+  await assert.rejects(h.run("x_get_tweet", { tweet: "999", include: "none" }), /not found/);
+});
+
+void test("search description explains post types; article mistakes get targeted hints", async () => {
+  const h = harness({
+    "/TweetArticle": fixture("empty-tweet"),
+    "/TweetDetailv3": fixture("empty-tweet"),
+  });
+  const parameters = h.tools.get("x_search")?.parameters as unknown as {
+    properties: { type: { description: string } };
+  };
+  assert.match(parameters.properties.type.description, /top.*latest = posts/);
+  assert.equal(
+    Check(h.tools.get("x_search")?.parameters as TSchema, { query: "ai", type: "posts" }),
+    false
+  );
+  await assert.rejects(h.run("x_get_article", { tweet: "123" }), /containing tweet's ID/);
+  await assert.rejects(
+    h.run("x_get_tweet", { tweet: "123", include: "none" }),
+    /containing tweet's ID/
+  );
+  const before = h.calls.length;
+  await assert.rejects(
+    h.run("x_get_article", { tweet: "https://x.com/i/article/123" }),
+    /X article URL/
+  );
+  assert.equal(h.calls.length, before);
 });
 
 void test("article, profiles, timeline and all network modes", async () => {

@@ -183,6 +183,26 @@ void test("article markdown, community/list/trend shapes and empty results", () 
   assert.equal(normalizeTweet({ rest_id: "1", __typename: "TweetUnavailable" }), undefined);
 });
 
+void test("article IDs stay distinct from containing tweet IDs", () => {
+  const tweet = normalizeTweet({
+    rest_id: "123",
+    legacy: { full_text: "Article post" },
+    article: {
+      article_results: { result: { rest_id: "456", title: "Title", preview_text: "Preview" } },
+    },
+  });
+  assert.equal(tweet?.id, "123");
+  assert.deepEqual(tweet?.article, { id: "456", title: "Title", preview: "Preview" });
+});
+
+void test("wrapped article without inner typename retains full markdown", () => {
+  const raw = fixture("article");
+  const original = { ...findObjects(raw, "Tweet")[0] };
+  delete original.__typename;
+  const wrapped = { result: { __typename: "TweetWithVisibilityResults", tweet: original } };
+  assert.deepEqual(articleToMarkdown({ data: { tweetResult: wrapped } }), articleToMarkdown(raw));
+});
+
 void test("provider plural retweet fields preserve original attribution and community topics", () => {
   const tweet = extractTimeline(fixture("listtweets")).tweets.find(
     (t) => t.id === "2109923877979922547"

@@ -20,6 +20,13 @@ void test("tweet URLs accept X, Twitter, mobile and i/web paths", () => {
     assert.equal(parseTweetId(url), "123");
 });
 
+void test("article URLs explain the containing-tweet requirement", () => {
+  for (const input of ["https://x.com/i/article/123", "twitter.com/i/article/123/?s=20"]) {
+    assert.throws(() => parseTweetId(input), /X article URL: pass the tweet that contains/);
+  }
+  assert.throws(() => parseTweetId("https://evil.com/i/article/123"), /valid x.com/);
+});
+
 void test("user references and list/community URLs", () => {
   assert.deepEqual(parseUserRef(" @AnthropicAI "), { username: "AnthropicAI" });
   assert.deepEqual(parseUserRef("https://x.com/AnthropicAI/?s=20"), { username: "AnthropicAI" });

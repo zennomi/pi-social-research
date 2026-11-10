@@ -30,7 +30,9 @@ export interface SlimTweet {
   pinned?: boolean | undefined;
   media?: { type: string; url: string; duration_s?: number | undefined }[] | undefined;
   links?: string[] | undefined;
-  article?: { title?: string | undefined; preview?: string | undefined } | undefined;
+  article?:
+    | { id?: string | undefined; title?: string | undefined; preview?: string | undefined }
+    | undefined;
   quoted?: SlimTweet | undefined;
   retweet_of?: SlimTweet | undefined;
 }
@@ -49,18 +51,18 @@ export function at(value: unknown, ...keys: string[]): unknown {
   return keys.reduce<unknown>((current, key) => object(current)[key], value);
 }
 
-function str(value: unknown): string | undefined {
+export function str(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
-function num(value: unknown): number | undefined {
+export function num(value: unknown): number | undefined {
   if (value === undefined || value === null || value === "" || typeof value === "boolean")
     return undefined;
   const result = Number(value);
   return Number.isFinite(result) ? result : undefined;
 }
 
-function iso(value: unknown): string | undefined {
+export function iso(value: unknown): string | undefined {
   if (typeof value !== "string" && typeof value !== "number") return undefined;
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
@@ -229,6 +231,7 @@ export function normalizeTweet(raw: unknown, depth = 0): SlimTweet | undefined {
     ],
     article: article.title
       ? compact({
+          id: str(article.rest_id),
           title: str(article.title),
           preview: capText(str(article.preview_text) ?? "", 1000),
         })
@@ -264,6 +267,23 @@ export function findObjects(raw: unknown, typename: string): RawObject[] {
   }
   walk(raw);
   return results;
+}
+
+/** Prefer endpoint roots; wrappers may omit the inner Tweet typename. */
+function* detailTweets(raw: unknown): Generator<RawObject> {
+  yield unwrapTweet(at(raw, "data", "tweet_results"));
+  yield unwrapTweet(at(raw, "data", "tweetResult"));
+  for (const kind of ["Tweet", "TweetWithVisibilityResults"]) {
+    for (const candidate of findObjects(raw, kind)) yield unwrapTweet(candidate);
+  }
+}
+
+export function tweetFromDetail(raw: unknown, id: string): SlimTweet | undefined {
+  for (const candidate of detailTweets(raw)) {
+    const tweet = normalizeTweet(candidate);
+    if (tweet?.id === id) return tweet;
+  }
+  return undefined;
 }
 
 export function extractTimeline(
@@ -389,7 +409,7 @@ export function normalizeListSearch(raw: unknown): object[] {
 export function articleToMarkdown(
   raw: unknown
 ): { title: string; markdown: string; author?: string | undefined } | undefined {
-  const tweet = findObjects(raw, "Tweet").find((t) =>
+  const tweet = [...detailTweets(raw)].find((t) =>
     at(t, "article", "article_results", "result", "content_state")
   );
   if (!tweet) return undefined;

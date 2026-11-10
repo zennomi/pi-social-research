@@ -1,3 +1,4 @@
+import { setTimeout as delay } from "node:timers/promises";
 import { findObjects, normalizeUser, object } from "./normalize.js";
 import { parseUserRef } from "./parse.js";
 
@@ -11,6 +12,17 @@ export interface XClient {
   readonly rateLimit: RateLimit;
   get(endpoint: string, query: Query, signal?: AbortSignal): Promise<unknown>;
   resolveUserId(user: string, signal?: AbortSignal): Promise<string>;
+}
+
+export class XApiError extends Error {
+  constructor(
+    message: string,
+    readonly retryable: boolean,
+    readonly status?: number
+  ) {
+    super(message);
+    this.name = "XApiError";
+  }
 }
 
 export function createXClient(options: {
@@ -32,18 +44,38 @@ export function createXClient(options: {
     }
     const timeout = AbortSignal.timeout(options.timeoutMs ?? 30_000);
     const combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
-    combined.throwIfAborted();
+    // One deadline covers both attempts and the backoff, including response bodies.
+    for (let attempt = 0; ; attempt++) {
+      combined.throwIfAborted();
+      try {
+        return await request(url, endpoint, combined);
+      } catch (error) {
+        if (combined.aborted) throw combined.reason;
+        if (!(error instanceof XApiError) || !error.retryable || attempt === 1) throw error;
+        try {
+          await delay(800 + Math.floor(Math.random() * 400), undefined, { signal: combined });
+        } catch {
+          throw combined.reason;
+        }
+      }
+    }
+  }
+
+  async function request(url: URL, endpoint: string, combined: AbortSignal): Promise<unknown> {
     let response: Response;
     try {
       response = await fetcher(url, {
         // Never forward a custom credential header to an unexpected redirect target.
         redirect: "error",
-        headers: { "x-rapidapi-host": X_API_HOST, "x-rapidapi-key": apiKey },
+        headers: { "x-rapidapi-host": X_API_HOST, "x-rapidapi-key": apiKey as string },
         signal: combined,
       });
     } catch {
       if (combined.aborted) throw combined.reason;
-      throw new Error(`X API network error for ${endpoint}. Check connectivity and try again.`);
+      throw new XApiError(
+        `X API network error for ${endpoint}. Check connectivity and try again.`,
+        true
+      );
     }
     for (const [header, key] of [
       ["remaining", "remaining"],
@@ -54,36 +86,52 @@ export function createXClient(options: {
     }
     if (!response.ok) {
       // Never echo provider error bodies: they may contain credentials or huge HTML pages.
+      await response.body?.cancel();
       if (response.status === 401 || response.status === 403) {
-        throw new Error(
-          "X API access denied (401/403). Check RAPIDAPI_KEY and your twitter283 subscription."
+        throw new XApiError(
+          "X API access denied (401/403). Check RAPIDAPI_KEY and your twitter283 subscription.",
+          false,
+          response.status
         );
       }
       if (response.status === 429) {
-        const retry = response.headers.get("retry-after") ?? rateLimit.reset_seconds;
-        throw new Error(
-          `X API rate limited (429).${retry === undefined ? "" : ` Retry after ${retry} seconds.`}`
+        const header = response.headers.get("retry-after");
+        const retry = header && /^\d+$/.test(header) ? Number(header) : rateLimit.reset_seconds;
+        throw new XApiError(
+          `X API rate limited (429).${retry === undefined ? "" : ` Retry after ${retry} seconds.`}`,
+          false,
+          429
         );
       }
-      throw new Error(`X API HTTP ${response.status} for ${endpoint}.`);
+      const retryable = response.status >= 500;
+      throw new XApiError(
+        `X API HTTP ${response.status} for ${endpoint}.` +
+          (retryable
+            ? " Provider-side failure; endpoint may be temporarily down. Retry later or use x_user_tweets / x_get_tweet for known accounts/URLs."
+            : " Check the request parameters."),
+        retryable,
+        response.status
+      );
     }
     let raw: unknown;
     try {
       raw = await response.json();
     } catch {
       if (combined.aborted) throw combined.reason;
-      throw new Error(`X API returned invalid JSON for ${endpoint}.`);
+      throw new XApiError(`X API returned invalid JSON for ${endpoint}.`, true, response.status);
     }
     combined.throwIfAborted();
     const r = object(raw);
     if (Array.isArray(r.errors) && r.errors.length > 0) {
       // Some GraphQL endpoints return failures at HTTP 200. Don't turn them into empty search results.
-      throw new Error(
-        `X API reported an upstream error for ${endpoint}. The data may be unavailable.`
+      throw new XApiError(
+        `X API reported an upstream error for ${endpoint}. The data may be unavailable.`,
+        true,
+        response.status
       );
     }
     if (r.error || (r.message && !r.data))
-      throw new Error(`X API reported an error for ${endpoint}.`);
+      throw new XApiError(`X API reported an error for ${endpoint}.`, true, response.status);
     return raw;
   }
 

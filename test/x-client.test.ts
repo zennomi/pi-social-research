@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createXClient, X_API_HOST } from "../src/x/client.js";
+import { createXClient, X_API_HOST, XApiError } from "../src/x/client.js";
 
 void test("key is required only when a request is made", async () => {
   const client = createXClient({ apiKey: undefined });
@@ -60,6 +60,59 @@ void test("HTTP and malformed provider failures are helpful without exposing bod
     },
   });
   await assert.rejects(network.get("/Search", {}), /network error/);
+});
+
+void test("transient failures retry once; client errors never retry or leak bodies", async () => {
+  for (const status of [400, 401, 403, 404, 429, 500, 503]) {
+    let calls = 0;
+    const client = createXClient({
+      apiKey: "secret",
+      fetch: async () => {
+        calls++;
+        return new Response("secret private body", { status });
+      },
+    });
+    await assert.rejects(client.get("/Search", {}), (error: unknown) => {
+      assert.ok(error instanceof XApiError);
+      assert.equal(error.status, status);
+      assert.equal(error.retryable, status >= 500);
+      assert.doesNotMatch(error.message, /secret|private body/);
+      if (status >= 500) assert.match(error.message, /provider-side|Provider-side/);
+      return true;
+    });
+    assert.equal(calls, status >= 500 ? 2 : 1);
+  }
+  for (const mode of ["500", "network", "json", "graphql", "message"]) {
+    let calls = 0;
+    const client = createXClient({
+      apiKey: "key",
+      fetch: async () => {
+        if (++calls > 1) return Response.json({ data: { ok: true } });
+        if (mode === "network") throw new Error("private body");
+        if (mode === "500") return new Response("", { status: 500 });
+        if (mode === "json") return new Response("html");
+        return Response.json(mode === "graphql" ? { errors: [{}] } : { message: "failed" });
+      },
+    });
+    assert.deepEqual(await client.get("/Search", {}), { data: { ok: true } });
+    assert.equal(calls, 2);
+  }
+});
+
+void test("abort during backoff prevents retry and preserves caller reason", async () => {
+  const controller = new AbortController();
+  const reason = new Error("stop backoff");
+  let calls = 0;
+  const client = createXClient({
+    apiKey: "key",
+    fetch: async () => {
+      calls++;
+      setTimeout(() => controller.abort(reason), 20);
+      return new Response("", { status: 503 });
+    },
+  });
+  await assert.rejects(client.get("/Search", {}, controller.signal), (error) => error === reason);
+  assert.equal(calls, 1);
 });
 
 void test("caller abort and timeout are forwarded to fetch", async () => {

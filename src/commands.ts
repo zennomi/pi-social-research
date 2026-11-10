@@ -5,6 +5,7 @@ export function buildHelpText(): string {
     `/${EXTENSION_COMMAND} status`,
     `/${EXTENSION_COMMAND} help`,
     "Set RAPIDAPI_KEY in your environment to enable X research tools (twitter283 subscription required).",
+    "Optionally set TWEETAPI_KEY for top/latest search fallback when twitter283 fails.",
     "Use x_search to discover posts, people, lists or communities; x_get_tweet to read discussions.",
     "The bundled reddit-unofficial-api skill uses the browser separately, without an API key.",
   ].join("\n");

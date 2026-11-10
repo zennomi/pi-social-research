@@ -8,21 +8,23 @@ import {
   truncateHead,
 } from "@earendil-works/pi-coding-agent";
 import { type Static, type TSchema, Type } from "typebox";
-import { type Query, type XClient } from "./client.js";
+import { type Query, XApiError, type XClient } from "./client.js";
 import {
   articleToMarkdown,
   at,
+  capText,
   compact,
   findObjects,
   normalizeCommunity,
   normalizeListSearch,
   normalizeTrends,
-  normalizeTweet,
   normalizeUser,
   extractTimeline as parseTimeline,
   type SlimTweet,
+  tweetFromDetail,
 } from "./normalize.js";
 import { parseCommunityId, parseListId, parseTweetId, parseUserRef } from "./parse.js";
+import { type TweetApiClient, TweetApiError } from "./tweetapi.js";
 
 const reference = (description: string) =>
   Type.String({ description, minLength: 1, maxLength: 2048 });
@@ -35,6 +37,8 @@ const cursor = Type.Optional(
 );
 const choice = <T extends string>(...values: T[]) => Type.Enum(values);
 const outputSchema = Type.Object({}, { additionalProperties: true });
+const EMPTY_SEARCH_NOTICE =
+  "No results on this first page. This may be a real empty result, limited visibility of sensitive accounts or old posts, or provider degradation; it does not prove no posts exist. Broaden the query or use x_user_tweets for a known account.";
 
 function extractTimeline(raw: unknown) {
   return parseTimeline(raw, true);
@@ -70,7 +74,47 @@ export async function formatXResult(data: object, details: object) {
   };
 }
 
-export function registerXTools(pi: ExtensionAPI, getClient: () => XClient): void {
+export function registerXTools(
+  pi: ExtensionAPI,
+  getClient: () => XClient,
+  getSearchFallback?: () => TweetApiClient | undefined
+): void {
+  async function fallbackSearch(
+    query: string,
+    type: "top" | "latest",
+    cursor?: string,
+    failure?: XApiError,
+    signal?: AbortSignal
+  ) {
+    signal?.throwIfAborted();
+    const fallback = getSearchFallback?.();
+    if (!fallback) {
+      const hint = "Set TWEETAPI_KEY to enable the TweetAPI search fallback.";
+      if (failure)
+        throw new XApiError(`${failure.message} ${hint}`, failure.retryable, failure.status);
+      throw new Error(hint);
+    }
+    try {
+      const page = await fallback.search(query, type === "top" ? "Top" : "Latest", cursor, signal);
+      signal?.throwIfAborted();
+      return {
+        items: page.items,
+        ...compact({ next_cursor: page.next_cursor ? `tweetapi:${page.next_cursor}` : undefined }),
+        provider: "tweetapi",
+        notice: `${
+          failure
+            ? `twitter283 search failed (${capText(failure.message, 240)}); results from TweetAPI fallback.`
+            : "Continuing TweetAPI fallback search."
+        } count is ignored (provider page ≈20).`,
+      };
+    } catch (error) {
+      signal?.throwIfAborted();
+      if (!failure) throw error;
+      const reason =
+        error instanceof TweetApiError ? error.message : "TweetAPI request failed or timed out.";
+      throw new Error(`twitter283: ${capText(failure.message, 240)} TweetAPI: ${reason}`);
+    }
+  }
   function register<T extends TSchema>(
     name: string,
     description: string,
@@ -106,13 +150,25 @@ export function registerXTools(pi: ExtensionAPI, getClient: () => XClient): void
         // pi and extensions can resolve different TypeBox patch versions; schemas are JSON-compatible.
         const result = await run(params as unknown as Static<T>, request, client, signal);
         const items = at(result, "items") ?? at(result, "replies") ?? at(result, "quotes");
+        const data =
+          name === "x_search" && !at(params, "cursor") && Array.isArray(items) && items.length === 0
+            ? {
+                ...result,
+                notice: [at(result, "notice"), EMPTY_SEARCH_NOTICE].filter(Boolean).join(" "),
+              }
+            : result;
         return formatXResult(
-          result,
+          data,
           compact({
-            endpoint: endpoints.join(", "),
+            endpoint: [
+              ...endpoints,
+              ...(at(result, "provider") === "tweetapi" ? ["TweetAPI /tw-v2/search"] : []),
+            ].join(", "),
+            provider: at(result, "provider"),
             count: Array.isArray(items) ? items.length : 1,
             next_cursor: at(result, "next_cursor"),
-            rate_limit_remaining: client.rateLimit.remaining,
+            rate_limit_remaining:
+              at(result, "provider") === "tweetapi" ? undefined : client.rateLimit.remaining,
           })
         );
       },
@@ -121,27 +177,37 @@ export function registerXTools(pi: ExtensionAPI, getClient: () => XClient): void
 
   register(
     "x_search",
-    "Search X posts, people, curated lists or communities. Returns a normalized page with next_cursor; never auto-paginates.",
+    "Search X posts, people, curated lists or communities. Returns a normalized page with next_cursor; never auto-paginates. Optional TweetAPI fallback for top/latest provider failures.",
     Type.Object({
       query: reference(
         "X search query (supports operators for posts), or keywords for people/lists/communities."
       ),
-      type: Type.Optional(
-        choice("top", "latest", "people", "photos", "videos", "lists", "communities")
-      ),
+      type: Type.Optional({
+        ...choice("top", "latest", "people", "photos", "videos", "lists", "communities"),
+        description:
+          "top (default) / latest = posts ranked / newest; people; photos; videos; lists; communities. There is no posts type.",
+      }),
       count: Type.Optional(
         Type.Integer({
           minimum: 1,
           maximum: 50,
           description:
-            "Requested Search page size, default 20. Lists/communities use the provider's page size.",
+            "Requested Search page size, default 20. Lists/communities and TweetAPI fallback use the provider's page size (count ignored).",
         })
       ),
       cursor,
     }),
-    async (p, get) => {
+    async (p, get, _client, signal) => {
       const query = p.query.trim();
       if (!query) throw new Error("Search query must not be blank.");
+      const type = p.type ?? "top";
+      if (p.cursor?.startsWith("tweetapi:")) {
+        if ((type !== "top" && type !== "latest") || p.cursor === "tweetapi:")
+          throw new Error(
+            "TweetAPI cursors require the same top/latest search and a non-empty cursor."
+          );
+        return fallbackSearch(query, type, p.cursor.slice("tweetapi:".length), undefined, signal);
+      }
       if (p.type === "lists") {
         const raw = await get("/ListSearch", { q: query, cursor: p.cursor });
         requireArray(at(raw, "lists"), "list search");
@@ -161,13 +227,32 @@ export function registerXTools(pi: ExtensionAPI, getClient: () => XClient): void
           }),
         };
       }
-      const type = p.type ?? "top";
-      const raw = await get("/Search", {
-        q: query,
-        type: type[0]?.toUpperCase() + type.slice(1),
-        count: p.count ?? 20,
-        cursor: p.cursor,
-      });
+      let raw: unknown;
+      try {
+        raw = await get("/Search", {
+          q: query,
+          type: type[0]?.toUpperCase() + type.slice(1),
+          count: p.count ?? 20,
+          cursor: p.cursor,
+        });
+      } catch (error) {
+        signal?.throwIfAborted();
+        if (
+          !(error instanceof XApiError) ||
+          (type !== "top" && type !== "latest") ||
+          (!error.retryable && error.status !== 401 && error.status !== 403 && error.status !== 429)
+        )
+          throw error;
+        // A primary-provider cursor has no meaning to TweetAPI. Never silently restart page 1.
+        if (p.cursor)
+          throw new XApiError(
+            error.message +
+              " Cannot switch providers with a twitter283 cursor; restart the search without cursor.",
+            error.retryable,
+            error.status
+          );
+        return fallbackSearch(query, type, undefined, error, signal);
+      }
       const page = extractTimeline(raw);
       return {
         items: type === "people" ? page.users : page.tweets,
@@ -185,10 +270,11 @@ export function registerXTools(pi: ExtensionAPI, getClient: () => XClient): void
     get: (endpoint: string, query: Query) => Promise<unknown>
   ): Promise<SlimTweet> {
     const raw = await get("/TweetDetailv3", { tweet_id: id });
-    const tweet = findObjects(raw, "Tweet")
-      .map((t) => normalizeTweet(t))
-      .find((t) => t?.id === id);
-    if (!tweet) throw new Error(`X tweet ${id} not found or unavailable.`);
+    const tweet = tweetFromDetail(raw, id);
+    if (!tweet)
+      throw new Error(
+        `X tweet ${id} not found or unavailable. If this is an article ID, pass the containing tweet's ID/URL instead.`
+      );
     return tweet;
   }
 
@@ -234,14 +320,19 @@ export function registerXTools(pi: ExtensionAPI, getClient: () => XClient): void
 
   register(
     "x_get_article",
-    "Read the full text of a long-form X article as markdown, by its containing tweet ID/URL. Does not fetch article previews only.",
+    "Read a full X article as markdown. Pass the status ID/URL of the tweet containing the article, NOT the article.id or an x.com/i/article/<id> link. x_get_tweet exposes the article.id separately from tweet.id.",
     Type.Object({
-      tweet: reference("Tweet containing the X article."),
+      tweet: reference(
+        "Status ID/URL of the tweet containing the article; NOT article.id or an /i/article/ URL."
+      ),
     }),
     async (p, get) => {
       const id = parseTweetId(p.tweet);
       const article = articleToMarkdown(await get("/TweetArticle", { tweet_id: id }));
-      if (!article) throw new Error(`X article for tweet ${id} not found or unavailable.`);
+      if (!article)
+        throw new Error(
+          `X article for tweet ${id} not found or unavailable. If this is an article ID, pass the containing tweet's ID/URL instead.`
+        );
       return { tweet_id: id, url: `https://x.com/i/web/status/${id}`, ...article };
     }
   );
