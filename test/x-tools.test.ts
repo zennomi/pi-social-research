@@ -4,7 +4,7 @@ import { readFile, rm } from "node:fs/promises";
 import { dirname } from "node:path";
 import test from "node:test";
 import { type ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { type TSchema } from "typebox";
+import { type TObject, type TSchema } from "typebox";
 import { Check } from "typebox/value";
 import { X_TOOL_NAMES } from "../src/constants.js";
 import { createXClient, type Query, XApiError, type XClient } from "../src/x/client.js";
@@ -106,6 +106,37 @@ void test("9 read-only tools register with input/output schemas and validate bou
     Check(h.tools.get("x_user_network")?.parameters as TSchema, { user: "ai", relation: "likes" }),
     false
   );
+});
+
+void test("tool schemas serialize without TypeBox internals for Gemini/proxy requests", () => {
+  for (const [name, tool] of harness().tools) {
+    for (const key of ["parameters", "outputSchema"] as const) {
+      assert.doesNotMatch(JSON.stringify(tool[key]), /"~[^"]*"\s*:/, `${name}.${key}`);
+    }
+  }
+});
+
+void test("serialized search schema preserves optional fields, enum and bounds", () => {
+  const search = harness().tools.get("x_search");
+  assert.ok(search);
+  const parameters = JSON.parse(JSON.stringify(search.parameters)) as TObject;
+  assert.deepEqual(parameters.required, ["query"]);
+  assert.equal(Check(parameters, { query: "ai" }), true);
+  for (const type of ["top", "latest", "people", "photos", "videos", "lists", "communities"]) {
+    assert.equal(Check(parameters, { query: "ai", type, count: 20, cursor: "opaque" }), true);
+  }
+  for (const input of [
+    {},
+    { query: "" },
+    { query: "ai", type: "posts" },
+    { query: "ai", type: null },
+    { query: "ai", count: 0 },
+    { query: "ai", count: 51 },
+    { query: "ai", count: 1.5 },
+    { query: "ai", cursor: "" },
+  ]) {
+    assert.equal(Check(parameters, input), false, JSON.stringify(input));
+  }
 });
 
 void test("search dispatches posts, people, lists and communities and propagates cursor/signal", async () => {

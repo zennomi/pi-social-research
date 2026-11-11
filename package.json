@@ -1,6 +1,6 @@
 {
   "name": "@zennomi/pi-social-research",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Pi extension for social research",
   "keywords": [
     "pi-package",

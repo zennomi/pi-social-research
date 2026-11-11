@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [0.1.0]
 
 - Fix standalone/quotes tweet lookups and article extraction for visibility-wrapped responses.
 - Retry twitter283 transient failures once with cancellable backoff and actionable errors.

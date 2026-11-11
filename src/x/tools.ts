@@ -182,11 +182,14 @@ export function registerXTools(
       query: reference(
         "X search query (supports operators for posts), or keywords for people/lists/communities."
       ),
-      type: Type.Optional({
-        ...choice("top", "latest", "people", "photos", "videos", "lists", "communities"),
-        description:
-          "top (default) / latest = posts ranked / newest; people; photos; videos; lists; communities. There is no posts type.",
-      }),
+      // Pass options to the constructor: spreading a schema drops TypeBox's hidden metadata
+      // and makes Type.Optional emit an enumerable ~optional that Gemini rejects.
+      type: Type.Optional(
+        Type.Enum(["top", "latest", "people", "photos", "videos", "lists", "communities"], {
+          description:
+            "top (default) / latest = posts ranked / newest; people; photos; videos; lists; communities. There is no posts type.",
+        })
+      ),
       count: Type.Optional(
         Type.Integer({
           minimum: 1,
