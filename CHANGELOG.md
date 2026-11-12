@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.1]
+
+- Accept omitted, null and blank first-page cursors consistently across X tools; preserve
+  nonempty opaque cursors without interpreting invented sentinels.
+- Return structured cursor recovery errors with `isError: true` and `next_call`, without
+  echoing arbitrary arguments or search queries.
+- Reuse search fallback during a bounded 30-second primary-provider cooldown, preserving
+  provider-specific pagination and distinguishing provider timeouts from caller cancellation.
+
 ## [0.1.0]
 
 - Fix standalone/quotes tweet lookups and article extraction for visibility-wrapped responses.

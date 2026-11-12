@@ -45,19 +45,27 @@ export function createXClient(options: {
     const timeout = AbortSignal.timeout(options.timeoutMs ?? 30_000);
     const combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
     // One deadline covers both attempts and the backoff, including response bodies.
-    for (let attempt = 0; ; attempt++) {
-      combined.throwIfAborted();
-      try {
-        return await request(url, endpoint, combined);
-      } catch (error) {
-        if (combined.aborted) throw combined.reason;
-        if (!(error instanceof XApiError) || !error.retryable || attempt === 1) throw error;
+    try {
+      for (let attempt = 0; ; attempt++) {
+        combined.throwIfAborted();
         try {
-          await delay(800 + Math.floor(Math.random() * 400), undefined, { signal: combined });
-        } catch {
-          throw combined.reason;
+          return await request(url, endpoint, combined);
+        } catch (error) {
+          if (combined.aborted) throw combined.reason;
+          if (!(error instanceof XApiError) || !error.retryable || attempt === 1) throw error;
+          try {
+            await delay(800 + Math.floor(Math.random() * 400), undefined, { signal: combined });
+          } catch {
+            throw combined.reason;
+          }
         }
       }
+    } catch (error) {
+      // Caller cancellation must never trigger provider fallback or poison search health.
+      signal?.throwIfAborted();
+      if (timeout.aborted)
+        throw new XApiError(`X API request timed out for ${endpoint}. Retry later.`, true);
+      throw error;
     }
   }
 

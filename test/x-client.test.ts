@@ -117,16 +117,21 @@ void test("abort during backoff prevents retry and preserves caller reason", asy
 
 void test("caller abort and timeout are forwarded to fetch", async () => {
   const controller = new AbortController();
-  controller.abort(new Error("cancelled"));
+  const cancelled = new Error("cancelled");
+  controller.abort(cancelled);
+  let calls = 0;
   const never: typeof fetch = async () => {
+    calls++;
     throw new Error("should not fetch");
   };
   await assert.rejects(
     createXClient({ apiKey: "key", fetch: never }).get("/Search", {}, controller.signal),
-    /cancelled/
+    (error) => error === cancelled
   );
-  const fetcher: typeof fetch = async (_input, init) =>
-    new Promise((_resolve, reject) => {
+  assert.equal(calls, 0, "pre-aborted requests must not fetch");
+  const fetcher: typeof fetch = async (_input, init) => {
+    calls++;
+    return new Promise((_resolve, reject) => {
       const keepAlive = setTimeout(() => reject(new Error("timeout didn't fire")), 1000);
       init?.signal?.addEventListener(
         "abort",
@@ -137,18 +142,32 @@ void test("caller abort and timeout are forwarded to fetch", async () => {
         { once: true }
       );
     });
+  };
   await assert.rejects(
-    createXClient({ apiKey: "key", fetch: fetcher, timeoutMs: 5 }).get("/Search", {}),
-    { name: "TimeoutError" }
+    createXClient({ apiKey: "private-key", fetch: fetcher, timeoutMs: 5 }).get("/Search", {
+      q: "private-query",
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof XApiError);
+      assert.equal(error.name, "XApiError");
+      assert.equal(error.retryable, true);
+      assert.equal(error.status, undefined);
+      assert.match(error.message, /timed out.*\/Search/);
+      assert.doesNotMatch(error.message, /private-key|private-query/);
+      return true;
+    }
   );
+  assert.equal(calls, 1, "a provider deadline must not start another attempt");
   const active = new AbortController();
   const promise = createXClient({ apiKey: "key", fetch: fetcher }).get(
     "/Search",
     {},
     active.signal
   );
-  active.abort(new Error("stop"));
-  await assert.rejects(promise, /stop/);
+  const stopped = new Error("stop");
+  active.abort(stopped);
+  await assert.rejects(promise, (error) => error === stopped);
+  assert.equal(calls, 2, "caller cancellation must not retry");
 });
 
 void test("resolve usernames with bounded cache, and not-found is explicit", async () => {

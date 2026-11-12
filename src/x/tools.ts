@@ -29,12 +29,32 @@ import { type TweetApiClient, TweetApiError } from "./tweetapi.js";
 const reference = (description: string) =>
   Type.String({ description, minLength: 1, maxLength: 2048 });
 const cursor = Type.Optional(
-  Type.String({
-    description: "Opaque next_cursor from the previous page of this same operation.",
-    minLength: 1,
-    maxLength: 16000,
+  Type.Union([Type.String({ maxLength: 16000 }), Type.Null()], {
+    description:
+      "Omit, null or an empty/whitespace-only string for the first page. Otherwise pass next_cursor from the same operation, query and provider exactly; never invent sentinels such as -1, / or .remove.",
   })
 );
+const SEARCH_COOLDOWN_MS = 30_000;
+
+type XToolFailure = {
+  outcome: "error";
+  code: string;
+  field: string;
+  message: string;
+  retryable: boolean;
+  suggestedAction: string;
+  next_call: { tool: string; arguments: object };
+};
+
+class XToolError extends Error {
+  readonly data: XToolFailure;
+
+  constructor(data: XToolFailure) {
+    super(data.message);
+    this.name = "XToolError";
+    this.data = data;
+  }
+}
 const choice = <T extends string>(...values: T[]) => Type.Enum(values);
 const outputSchema = Type.Object({}, { additionalProperties: true });
 const EMPTY_SEARCH_NOTICE =
@@ -79,6 +99,9 @@ export function registerXTools(
   getClient: () => XClient,
   getSearchFallback?: () => TweetApiClient | undefined
 ): void {
+  // At most two deadlines per tool instance; no query/result/error cache or background timer.
+  const searchRetryAt = new Map<"top" | "latest", number>();
+
   async function fallbackSearch(
     query: string,
     type: "top" | "latest",
@@ -120,7 +143,7 @@ export function registerXTools(
     description: string,
     parameters: T,
     run: (
-      params: Static<T>,
+      params: Static<T> & { cursor?: string },
       request: (endpoint: string, query: Query) => Promise<unknown>,
       client: XClient,
       signal: AbortSignal | undefined
@@ -141,6 +164,13 @@ export function registerXTools(
       },
       annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
       async execute(_id, params, signal) {
+        signal?.throwIfAborted();
+        // Normalize once for every cursor tool. Inspect whitespace without altering opaque tokens.
+        const value = at(params, "cursor");
+        const normalized = {
+          ...params,
+          cursor: typeof value === "string" && value.trim() ? value : undefined,
+        } as Static<T> & { cursor?: string };
         const client = getClient();
         const endpoints: string[] = [];
         const request = async (endpoint: string, query: Query) => {
@@ -148,10 +178,18 @@ export function registerXTools(
           return client.get(endpoint, query, signal);
         };
         // pi and extensions can resolve different TypeBox patch versions; schemas are JSON-compatible.
-        const result = await run(params as unknown as Static<T>, request, client, signal);
+        let result: object;
+        try {
+          result = await run(normalized, request, client, signal);
+        } catch (error) {
+          signal?.throwIfAborted();
+          if (!(error instanceof XToolError)) throw error;
+          return { ...(await formatXResult(error.data, error.data)), isError: true };
+        }
+        signal?.throwIfAborted();
         const items = at(result, "items") ?? at(result, "replies") ?? at(result, "quotes");
         const data =
-          name === "x_search" && !at(params, "cursor") && Array.isArray(items) && items.length === 0
+          name === "x_search" && !normalized.cursor && Array.isArray(items) && items.length === 0
             ? {
                 ...result,
                 notice: [at(result, "notice"), EMPTY_SEARCH_NOTICE].filter(Boolean).join(" "),
@@ -202,11 +240,28 @@ export function registerXTools(
     }),
     async (p, get, _client, signal) => {
       const query = p.query.trim();
-      if (!query) throw new Error("Search query must not be blank.");
       const type = p.type ?? "top";
+      // Queries, cursors and arbitrary extra parameters may contain secrets. Do not echo them.
+      const searchError = (code: string, field: string, message: string) =>
+        new XToolError({
+          outcome: "error",
+          code,
+          field,
+          message,
+          retryable: false,
+          suggestedAction:
+            "To explicitly restart page one, replace the next_call query placeholder with your original non-sensitive query and use cursor:null. This is a new search, not continuation of the failed page.",
+          next_call: {
+            tool: "x_search",
+            arguments: { query: "<original query>", type, cursor: null },
+          },
+        });
+      if (!query) throw searchError("INVALID_QUERY", "query", "Search query must not be blank.");
       if (p.cursor?.startsWith("tweetapi:")) {
-        if ((type !== "top" && type !== "latest") || p.cursor === "tweetapi:")
-          throw new Error(
+        if ((type !== "top" && type !== "latest") || !p.cursor.slice("tweetapi:".length).trim())
+          throw searchError(
+            "INVALID_CURSOR",
+            "cursor",
             "TweetAPI cursors require the same top/latest search and a non-empty cursor."
           );
         return fallbackSearch(query, type, p.cursor.slice("tweetapi:".length), undefined, signal);
@@ -230,6 +285,22 @@ export function registerXTools(
           }),
         };
       }
+      const fallbackType = type === "top" || type === "latest" ? type : undefined;
+      if (fallbackType && !p.cursor) {
+        const retryAt = searchRetryAt.get(fallbackType) ?? 0;
+        if (retryAt > Date.now())
+          return fallbackSearch(
+            query,
+            fallbackType,
+            undefined,
+            new XApiError(
+              `twitter283 search is cooling down after an upstream failure; retry primary in ${Math.ceil((retryAt - Date.now()) / 1000)} seconds.`,
+              true
+            ),
+            signal
+          );
+        searchRetryAt.delete(fallbackType);
+      }
       let raw: unknown;
       try {
         raw = await get("/Search", {
@@ -238,23 +309,26 @@ export function registerXTools(
           count: p.count ?? 20,
           cursor: p.cursor,
         });
+        signal?.throwIfAborted();
+        if (fallbackType) searchRetryAt.delete(fallbackType);
       } catch (error) {
         signal?.throwIfAborted();
         if (
           !(error instanceof XApiError) ||
-          (type !== "top" && type !== "latest") ||
+          !fallbackType ||
           (!error.retryable && error.status !== 401 && error.status !== 403 && error.status !== 429)
         )
           throw error;
+        if (error.retryable || error.status === 429)
+          searchRetryAt.set(fallbackType, Date.now() + SEARCH_COOLDOWN_MS);
         // A primary-provider cursor has no meaning to TweetAPI. Never silently restart page 1.
         if (p.cursor)
-          throw new XApiError(
-            error.message +
-              " Cannot switch providers with a twitter283 cursor; restart the search without cursor.",
-            error.retryable,
-            error.status
+          throw searchError(
+            "CURSOR_PROVIDER_MISMATCH",
+            "cursor",
+            "twitter283 search failed. Cannot switch providers with a twitter283 cursor."
           );
-        return fallbackSearch(query, type, undefined, error, signal);
+        return fallbackSearch(query, fallbackType, undefined, error, signal);
       }
       const page = extractTimeline(raw);
       return {
@@ -293,7 +367,19 @@ export function registerXTools(
       const id = parseTweetId(p.tweet);
       const include = p.include ?? "replies";
       if (include === "none") {
-        if (p.cursor) throw new Error("cursor is only supported for replies or quotes.");
+        if (p.cursor)
+          throw new XToolError({
+            outcome: "error",
+            code: "INVALID_CURSOR",
+            field: "cursor",
+            message: "cursor is only supported for replies or quotes.",
+            retryable: false,
+            suggestedAction: "Use cursor:null with include=none to read only the tweet.",
+            next_call: {
+              tool: "x_get_tweet",
+              arguments: { tweet: id, include: "none", cursor: null },
+            },
+          });
         return { tweet: await focal(id, get) };
       }
       if (include === "quotes") {
@@ -477,7 +563,19 @@ export function registerXTools(
       if (p.time_filter && (view !== "tweets" || sort !== "likes"))
         throw new Error("time_filter requires view=tweets and sort=likes.");
       if (view === "about") {
-        if (p.cursor) throw new Error("cursor is not supported for community about.");
+        if (p.cursor)
+          throw new XToolError({
+            outcome: "error",
+            code: "INVALID_CURSOR",
+            field: "cursor",
+            message: "cursor is not supported for community about.",
+            retryable: false,
+            suggestedAction: "Use cursor:null with view=about to read community details.",
+            next_call: {
+              tool: "x_community",
+              arguments: { community_id: id, view: "about", cursor: null },
+            },
+          });
         const raw = await get("/CommunityResultsById", { community_id: id });
         const community = findObjects(raw, "Community").map(normalizeCommunity).find(Boolean);
         if (!community) throw new Error(`X community ${id} not found or unavailable.`);

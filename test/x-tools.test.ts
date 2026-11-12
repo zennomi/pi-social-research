@@ -73,20 +73,44 @@ function harness(
     () => clientOverride ?? client,
     () => fallback
   );
-  const run = async (name: string, params: unknown, signal?: AbortSignal) => {
+  const execute = async (name: string, params: unknown, signal?: AbortSignal) => {
     const tool = tools.get(name);
     assert.ok(tool);
     assert.equal(Check(tool.parameters, params), true, `valid input to ${name}`);
     const result = await tool.execute("call", params, signal);
     assert.equal(Check(tool.outputSchema, result.structuredContent), true);
     assert.deepEqual(JSON.parse(result.content[0].text), result.structuredContent);
+    return result;
+  };
+  const run = async (name: string, params: unknown, signal?: AbortSignal) => {
+    const result = await execute(name, params, signal);
+    assert.notEqual(result.isError, true, `${name} must succeed`);
     if (result.structuredContent.provider === "tweetapi") {
       assert.equal(result.details.provider, "tweetapi");
       assert.equal(result.details.rate_limit_remaining, undefined);
     } else if (!clientOverride) assert.equal(result.details.rate_limit_remaining, 42);
     return result.structuredContent;
   };
-  return { tools, calls, run };
+  const runError = async (name: string, params: unknown, code: string, field = "cursor") => {
+    const result = await execute(name, params);
+    assert.equal(result.isError, true, `${name} must report an error, not a successful page`);
+    const data = result.structuredContent;
+    assert.equal(data.outcome, "error");
+    assert.equal(data.code, code);
+    assert.equal(data.field, field);
+    assert.equal(data.retryable, false);
+    assert.equal(typeof data.message, "string");
+    assert.ok(data.message.length > 0);
+    assert.equal(typeof data.suggestedAction, "string");
+    assert.ok(data.suggestedAction.length > 0);
+    assert.deepEqual(result.details, data);
+    assert.equal(data.next_call.tool, name);
+    assert.equal(data.next_call.arguments.cursor, null);
+    assert.equal(Check(tools.get(name)?.parameters as TSchema, data.next_call.arguments), true);
+    assert.equal(Object.hasOwn(data, "items"), false, "errors must not masquerade as empty pages");
+    return data;
+  };
+  return { tools, calls, run, runError };
 }
 
 void test("9 read-only tools register with input/output schemas and validate bounds", () => {
@@ -125,6 +149,9 @@ void test("serialized search schema preserves optional fields, enum and bounds",
   for (const type of ["top", "latest", "people", "photos", "videos", "lists", "communities"]) {
     assert.equal(Check(parameters, { query: "ai", type, count: 20, cursor: "opaque" }), true);
   }
+  for (const cursor of [null, "", " ", "\t\n", "-1", "/", ".remove", "  opaque+/=  "]) {
+    assert.equal(Check(parameters, { query: "ai", cursor }), true, JSON.stringify({ cursor }));
+  }
   for (const input of [
     {},
     { query: "" },
@@ -133,7 +160,9 @@ void test("serialized search schema preserves optional fields, enum and bounds",
     { query: "ai", count: 0 },
     { query: "ai", count: 51 },
     { query: "ai", count: 1.5 },
-    { query: "ai", cursor: "" },
+    { query: "ai", cursor: {} },
+    { query: "ai", cursor: 0 },
+    { query: "ai", cursor: "x".repeat(16001) },
   ]) {
     assert.equal(Check(parameters, input), false, JSON.stringify(input));
   }
@@ -157,10 +186,23 @@ void test("search dispatches posts, people, lists and communities and propagates
   assert.ok(profiles.items[0].username);
   assert.ok((await h.run("x_search", { query: "ai", type: "lists" })).items[0].id);
   assert.ok((await h.run("x_search", { query: "ai", type: "communities" })).next_cursor);
-  await assert.rejects(
-    h.tools.get("x_search")?.execute("c", { query: " " }) as Promise<unknown>,
-    /blank/
-  );
+  for (const cursor of [null, "", " ", "\t\n"]) {
+    await h.run("x_search", { query: "ai", cursor });
+    assert.equal(h.calls.at(-1)?.query.cursor, undefined);
+  }
+  for (const cursor of ["-1", "/", ".remove", "  opaque+/=  "]) {
+    await h.run("x_search", { query: "ai", cursor });
+    assert.equal(h.calls.at(-1)?.query.cursor, cursor, "opaque cursors must not be remapped");
+  }
+  const before = h.calls.length;
+  const invalid = await h.runError("x_search", { query: " " }, "INVALID_QUERY", "query");
+  assert.match(invalid.message, /blank/);
+  assert.deepEqual(invalid.next_call.arguments, {
+    query: "<original query>",
+    type: "top",
+    cursor: null,
+  });
+  assert.equal(h.calls.length, before, "invalid queries must not call the provider");
 });
 
 void test("empty first search page warns without losing its opaque cursor", async () => {
@@ -225,7 +267,8 @@ void test("search retries primary then falls back, and continuation stays on Twe
   assert.equal(raw.details.endpoint, "TweetAPI /tw-v2/search");
 });
 
-void test("fallback failures are actionable; all eligibility and cursor boundaries are enforced", async () => {
+void test("fallback failures are actionable; all eligibility and cursor boundaries are enforced", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 1_000_000 });
   const outage = new XApiError("X API HTTP 500 for /Search.", true, 500);
   await assert.rejects(
     harness({ "/Search": outage }).run("x_search", { query: "ai" }),
@@ -253,10 +296,20 @@ void test("fallback failures are actionable; all eligibility and cursor boundari
       fallback
     );
     await assert.rejects(h.run("x_search", { query: "ai", type }), (error) => error === outage);
-    await assert.rejects(
-      h.run("x_search", { query: "ai", type, cursor: "tweetapi:abc" }),
-      /same top/
+    const before = h.calls.length;
+    const invalid = await h.runError(
+      "x_search",
+      { query: "private-query", type, cursor: "tweetapi:private-cursor", extra: "private-extra" },
+      "INVALID_CURSOR"
     );
+    assert.match(invalid.message, /same top/);
+    assert.deepEqual(invalid.next_call.arguments, {
+      query: "<original query>",
+      type,
+      cursor: null,
+    });
+    assert.doesNotMatch(JSON.stringify(invalid), /private-query|private-cursor|private-extra/);
+    assert.equal(h.calls.length, before, "invalid fallback cursors must not reach primary");
   }
   for (const error of [
     new Error("bug"),
@@ -269,14 +322,36 @@ void test("fallback failures are actionable; all eligibility and cursor boundari
     );
   }
   const h = harness({ "/Search": outage }, fallback);
-  await assert.rejects(
-    h.run("x_search", { query: "ai", cursor: "twitter283-cursor" }),
-    /restart the search without cursor/
-  );
-  await assert.rejects(h.run("x_search", { query: "ai", cursor: "tweetapi:" }), /non-empty cursor/);
+  for (const cursor of ["twitter283-cursor", "-1", "/", ".remove", "  opaque+/=  "]) {
+    const invalid = await h.runError(
+      "x_search",
+      { query: "private-query", cursor },
+      "CURSOR_PROVIDER_MISMATCH"
+    );
+    assert.match(invalid.message, /Cannot switch providers/);
+    assert.match(invalid.suggestedAction, /placeholder.*cursor:null/);
+    assert.deepEqual(invalid.next_call.arguments, {
+      query: "<original query>",
+      type: "top",
+      cursor: null,
+    });
+    assert.doesNotMatch(JSON.stringify(invalid), /private-query/);
+    assert.equal(h.calls.at(-1)?.query.cursor, cursor);
+    assert.equal(calls, 0, "primary cursors must never cross to the fallback provider");
+  }
+  const beforeInvalid = h.calls.length;
+  for (const cursor of ["tweetapi:", "tweetapi: \t"]) {
+    const invalid = await h.runError("x_search", { query: "ai", cursor }, "INVALID_CURSOR");
+    assert.match(invalid.message, /non-empty cursor/);
+  }
   const controller = new AbortController();
-  controller.abort(new Error("cancelled"));
-  await assert.rejects(h.run("x_search", { query: "ai" }, controller.signal), /cancelled/);
+  const cancelled = new Error("cancelled");
+  controller.abort(cancelled);
+  await assert.rejects(
+    h.run("x_search", { query: "ai" }, controller.signal),
+    (error) => error === cancelled
+  );
+  assert.equal(h.calls.length, beforeInvalid, "invalid/aborted calls must not reach primary");
   assert.equal(calls, 0);
   for (const status of [401, 403, 429, 200]) {
     const data = await harness(
@@ -291,6 +366,42 @@ void test("fallback failures are actionable; all eligibility and cursor boundari
   await harness({ "/Search": { instructions: [] } }, fallback).run("x_search", { query: "ai" });
   await harness({}, fallback).run("x_search", { query: "ai" });
   assert.equal(calls, before, "empty/successful primary must not fall back");
+
+  const cooldown = harness({ "/Search": outage }, fallback);
+  await cooldown.run("x_search", { query: "one", cursor: null });
+  await cooldown.run("x_search", { query: "two", cursor: " \t" });
+  assert.equal(cooldown.calls.length, 1, "first-page calls reuse fallback during cooldown");
+  assert.equal(calls, before + 2, "fallback responses, including empty pages, are not cached");
+  t.mock.timers.tick(29_999);
+  await cooldown.run("x_search", { query: "three" });
+  assert.equal(cooldown.calls.length, 1);
+  t.mock.timers.tick(1);
+  await cooldown.run("x_search", { query: "four" });
+  assert.equal(cooldown.calls.length, 2, "primary is probed when the 30-second cooldown expires");
+  assert.equal(calls, before + 4);
+
+  const standalone = harness();
+  const tweet = "1768778186186195177";
+  for (const cursor of [null, "", " \t"]) {
+    const data = await standalone.run("x_get_tweet", { tweet, include: "none", cursor });
+    assert.equal(data.tweet.id, tweet);
+    assert.equal(Object.hasOwn(data, "replies"), false);
+    assert.equal(standalone.calls.at(-1)?.endpoint, "/TweetDetailv3");
+  }
+  const beforeStandalone = standalone.calls.length;
+  const invalid = await standalone.runError(
+    "x_get_tweet",
+    {
+      tweet: `https://x.com/sample/status/${tweet}?token=private-token`,
+      include: "none",
+      cursor: ".remove",
+      extra: "private-extra",
+    },
+    "INVALID_CURSOR"
+  );
+  assert.deepEqual(invalid.next_call.arguments, { tweet, include: "none", cursor: null });
+  assert.doesNotMatch(JSON.stringify(invalid), /private-token|private-extra/);
+  assert.equal(standalone.calls.length, beforeStandalone);
 });
 
 void test("tweet includes replies, quotes or standalone detail, with not-found errors", async () => {

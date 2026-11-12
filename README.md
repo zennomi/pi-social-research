@@ -108,7 +108,16 @@ edit controls, profile color palettes, or client-event metadata are exposed.
   `{ tweet, ancestors?, replies, next_cursor? }` or `{ tweet, quotes, next_cursor? }`.
   Profiles return `{ items, not_found? }` for partially missing batches.
 
-Pass `next_cursor` into the **same tool operation and filters** to continue.
+Omit `cursor`, pass `null`, or use an empty/whitespace-only string for the first
+page. Nonempty cursors are opaque and preserved exactly, including surrounding
+whitespace: pass `next_cursor` into the **same tool operation, query, filters and
+provider** to continue. Never invent sentinels such as `-1`, `/` or `.remove`.
+`x_get_tweet(include=none)` and `x_community(view=about)` accept only an empty
+cursor. Cursor conflicts return `isError: true` with structured `code`, `field`,
+`suggestedAction` and a `next_call` using `cursor: null`. Search recovery uses an
+explicit query placeholder: supply your original non-sensitive query locally,
+not the placeholder. Recovery does not echo arbitrary arguments or URL secrets.
+
 Tools never auto-paginate or promise exhaustive coverage. Provider order is
 preserved; repeated posts are deduplicated, promoted entries and "who to follow"
 modules are excluded. An unavailable focal tweet/user/article/community raises
@@ -124,9 +133,16 @@ post data; remove them when no longer needed.
 
 With `TWEETAPI_KEY` configured, only `top/latest` first-page search falls back
 from twitter283 to TweetAPI after network, 5xx, invalid JSON/upstream errors
-(still failing after one retry), or 401/403/429. No fallback occurs on empty
-results, invalid inputs, cancellation/timeouts, or other search types. Other X
-tools remain on twitter283 and still need `RAPIDAPI_KEY`.
+(still failing after one retry), a provider deadline, or 401/403/429. No fallback
+occurs on empty results, invalid inputs, caller cancellation, or other search
+types. Other X tools remain on twitter283 and still need `RAPIDAPI_KEY`.
+
+Transient primary failures and 429 start a 30-second cooldown per top/latest
+operation within this tool instance. First-page calls reuse the configured
+fallback during that interval; without one they remain errors. The next
+first-page call after expiry probes twitter283 again. Cursors stay with their
+provider even during cooldown. No failed or empty results are cached, and
+caller aborts do not mark the provider unhealthy.
 
 Fallback results carry `provider: "tweetapi"` and a `notice`. TweetAPI accepts
 queries of 1–512 characters and uses its own page size (~20); `count` is ignored,
