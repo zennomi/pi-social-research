@@ -1,22 +1,15 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
   createTweetApiClient,
   normalizeTweetApiPage,
   normalizeTweetApiTweet,
-  TWEETAPI_SEARCH_URL,
 } from "../src/x/tweetapi.js";
-
-function fixture(name: string): unknown {
-  return JSON.parse(
-    readFileSync(new URL(`./fixtures/x/tweetapi-search-${name}.json`, import.meta.url), "utf8")
-  );
-}
+import { fixture } from "./fixtures/x/load.js";
 
 void test("TweetAPI Latest and mixed Top normalize to bounded SlimTweet pages", () => {
-  const latest = normalizeTweetApiPage(fixture("latest"), "Latest");
-  const top = normalizeTweetApiPage(fixture("top"), "Top");
+  const latest = normalizeTweetApiPage(fixture("tweetapi-search-latest"), "Latest");
+  const top = normalizeTweetApiPage(fixture("tweetapi-search-top"), "Top");
   assert.deepEqual(top.items, latest.items);
   assert.equal(top.items.length, 1);
   assert.equal(top.next_cursor, undefined);
@@ -84,7 +77,7 @@ void test("fixed URL, key header, opaque cursor, no count, and bounded query", a
     fetch: async (input, init) => {
       calls++;
       const url = new URL(String(input));
-      assert.equal(url.origin + url.pathname, TWEETAPI_SEARCH_URL);
+      assert.equal(url.origin + url.pathname, "https://api.tweetapi.com/tw-v2/search");
       assert.equal(url.searchParams.get("query"), "甜甜 & from:sample");
       assert.equal(url.searchParams.get("type"), "Latest");
       assert.equal(url.searchParams.get("cursor"), "opaque+/=cursor");
@@ -93,7 +86,7 @@ void test("fixed URL, key header, opaque cursor, no count, and bounded query", a
       assert.equal(new Headers(init?.headers).has("x-rapidapi-key"), false);
       assert.equal(init?.redirect, "error");
       assert.ok(init?.signal);
-      return Response.json(fixture("latest"));
+      return Response.json(fixture("tweetapi-search-latest"));
     },
   });
   assert.equal(
@@ -115,7 +108,7 @@ void test("503 retries once only with a bounded numeric Retry-After", async () =
     const client = createTweetApiClient({
       apiKey: "key",
       fetch: async () => {
-        if (++calls > 1) return Response.json(fixture("latest"));
+        if (++calls > 1) return Response.json(fixture("tweetapi-search-latest"));
         return new Response("private body", {
           status: 503,
           headers: retry === null ? {} : { "retry-after": retry },

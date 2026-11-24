@@ -2,40 +2,37 @@ import { fileURLToPath } from "node:url";
 import { type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { buildHelpText, parseSubcommand } from "./commands.js";
 import { EXTENSION_COMMAND } from "./constants.js";
-import { createXClient, type XClient } from "./x/client.js";
+import { createXClient } from "./x/client.js";
 import { registerXTools } from "./x/tools.js";
-import { createTweetApiClient, type TweetApiClient } from "./x/tweetapi.js";
+import { createTweetApiClient } from "./x/tweetapi.js";
 
 /** Absolute path of the bundled skills directory, also discovered with bare pi -e loading. */
 export const SKILLS_DIR = fileURLToPath(new URL("../skills", import.meta.url));
 
-export default function socialResearch(pi: ExtensionAPI): void {
-  let client: XClient | undefined;
-  let clientKey: string | undefined;
-  function getClient(): XClient {
-    const apiKey = process.env.RAPIDAPI_KEY;
-    if (!client || clientKey !== apiKey) {
-      client = createXClient({ apiKey });
-      clientKey = apiKey;
-    }
-    return client;
-  }
+function clientForCurrentKey<T>(
+  readKey: () => string | undefined,
+  create: (key: string | undefined) => T
+) {
+  let cached: { key: string | undefined; client: T } | undefined;
+  return () => {
+    const key = readKey();
+    if (!cached || cached.key !== key) cached = { key, client: create(key) };
+    return cached.client;
+  };
+}
 
-  let searchFallback: TweetApiClient | undefined;
-  let fallbackKey: string | undefined;
-  function getSearchFallback(): TweetApiClient | undefined {
-    const apiKey = process.env.TWEETAPI_KEY?.trim();
-    if (fallbackKey !== apiKey) {
-      searchFallback = apiKey ? createTweetApiClient({ apiKey }) : undefined;
-      fallbackKey = apiKey;
-    }
-    return searchFallback;
-  }
+export default function socialResearch(pi: ExtensionAPI): void {
+  const primaryKey = () => process.env.RAPIDAPI_KEY;
+  const fallbackKey = () => process.env.TWEETAPI_KEY?.trim();
+  const getClient = clientForCurrentKey(primaryKey, (apiKey) => createXClient({ apiKey }));
+  const getSearchFallback = clientForCurrentKey(fallbackKey, (apiKey) =>
+    apiKey ? createTweetApiClient({ apiKey }) : undefined
+  );
 
   function status(): string {
-    const key = process.env.RAPIDAPI_KEY?.trim() ? "set" : "missing";
+    const key = primaryKey()?.trim() ? "set" : "missing";
     const remaining = getClient().rateLimit.remaining;
-    const fallback = process.env.TWEETAPI_KEY?.trim() ? "set" : "missing";
+    const fallback = fallbackKey() ? "set" : "missing";
     return `RAPIDAPI_KEY: ${key}\nTWEETAPI_KEY: ${fallback}\nRate limit remaining (twitter283): ${remaining ?? "unknown (no request yet)"}`;
   }
 

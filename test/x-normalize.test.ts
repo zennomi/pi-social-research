@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
   articleToMarkdown,
@@ -12,10 +11,7 @@ import {
   normalizeTweet,
   normalizeUser,
 } from "../src/x/normalize.js";
-
-function fixture(name: string): unknown {
-  return JSON.parse(readFileSync(new URL(`./fixtures/x/${name}.json`, import.meta.url), "utf8"));
-}
+import { fixture } from "./fixtures/x/load.js";
 
 void test("extract real tweet timelines without leaking provider fields", () => {
   for (const name of [
@@ -200,7 +196,12 @@ void test("wrapped article without inner typename retains full markdown", () => 
   const original = { ...findObjects(raw, "Tweet")[0] };
   delete original.__typename;
   const wrapped = { result: { __typename: "TweetWithVisibilityResults", tweet: original } };
-  assert.deepEqual(articleToMarkdown({ data: { tweetResult: wrapped } }), articleToMarkdown(raw));
+  const article = articleToMarkdown({ data: { tweetResult: wrapped } });
+  assert.equal(article?.title, "When Tokens Burn");
+  assert.equal(article.author, "Decentralisedco");
+  assert.match(article.markdown, /^# When Tokens Burn\n\nBy @Decentralisedco/);
+  assert.ok(article.markdown.includes("https://www.decentralised.co/p/when-tokens-burn"));
+  assert.ok(article.markdown.includes("they need to start communicating like real businesses."));
 });
 
 void test("provider plural retweet fields preserve original attribution and community topics", () => {

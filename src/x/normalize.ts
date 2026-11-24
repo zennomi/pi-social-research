@@ -47,6 +47,12 @@ export function array(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
 }
 
+export function requireArray(value: unknown, operation: string): unknown[] {
+  if (!Array.isArray(value))
+    throw new Error(`X ${operation} unavailable or unrecognized response schema.`);
+  return value;
+}
+
 export function at(value: unknown, ...keys: string[]): unknown {
   return keys.reduce<unknown>((current, key) => object(current)[key], value);
 }
@@ -85,6 +91,52 @@ export function compact<T extends object>(value: T): T {
 export function capText(text: string, limit = 4000): string {
   const points = Array.from(text);
   return points.length > limit ? `${points.slice(0, limit - 1).join("")}…` : text;
+}
+
+export function tweetUrl(id: string, username = "i/web"): string {
+  return `https://x.com/${username}/status/${id}`;
+}
+
+export function boundedTweetText(text: string, depth: number): string {
+  return depth > 0 ? capText(text, 1500) : capText(text);
+}
+
+export function articlePreview(
+  id: unknown,
+  title: unknown,
+  preview: unknown
+): SlimTweet["article"] {
+  return title
+    ? compact({ id: str(id), title: str(title), preview: capText(str(preview) ?? "", 1000) })
+    : undefined;
+}
+
+export function tweetMedia(
+  type: unknown,
+  posterUrl: unknown,
+  mp4Variants: RawObject[],
+  durationSeconds: number | undefined
+) {
+  const best = mp4Variants.sort((a, b) => (num(b.bitrate) ?? 0) - (num(a.bitrate) ?? 0))[0];
+  const url = str(best?.url ?? posterUrl);
+  return url
+    ? [
+        compact({
+          type: type === "animated_gif" ? "gif" : (str(type) ?? "photo"),
+          url,
+          duration_s: durationSeconds,
+        }),
+      ]
+    : [];
+}
+
+export function tweetMetrics(fields: RawObject): Record<string, number> {
+  const metrics: Record<string, number> = {};
+  for (const [name, raw] of Object.entries(fields)) {
+    const value = num(raw);
+    if (value !== undefined) metrics[name] = value;
+  }
+  return metrics;
 }
 
 function expand(text: string, urls: unknown[]): string {
@@ -174,32 +226,23 @@ export function normalizeTweet(raw: unknown, depth = 0): SlimTweet | undefined {
     const m = object(value);
     const mp4 = array(at(m, "video_info", "variants"))
       .map(object)
-      .filter((v) => v.content_type === "video/mp4")
-      .sort((a, b) => (num(b.bitrate) ?? 0) - (num(a.bitrate) ?? 0))[0];
-    const url = str(mp4?.url ?? m.media_url_https);
-    if (!url) return [];
+      .filter((v) => v.content_type === "video/mp4");
     const duration = num(at(m, "video_info", "duration_millis"));
-    return [
-      compact({
-        type: m.type === "animated_gif" ? "gif" : (str(m.type) ?? "photo"),
-        url,
-        duration_s: duration === undefined ? undefined : duration / 1000,
-      }),
-    ];
+    return tweetMedia(
+      m.type,
+      m.media_url_https,
+      mp4,
+      duration === undefined ? undefined : duration / 1000
+    );
   });
-  const metrics: Record<string, number> = {};
-  for (const [name, key] of Object.entries({
-    likes: "favorite_count",
-    retweets: "retweet_count",
-    replies: "reply_count",
-    quotes: "quote_count",
-    bookmarks: "bookmark_count",
-  })) {
-    const value = num(legacy[key]);
-    if (value !== undefined) metrics[name] = value;
-  }
-  const views = num(at(r, "view_count_info", "count") ?? at(r, "views", "count"));
-  if (views !== undefined) metrics.views = views;
+  const metrics = tweetMetrics({
+    likes: legacy.favorite_count,
+    retweets: legacy.retweet_count,
+    replies: legacy.reply_count,
+    quotes: legacy.quote_count,
+    bookmarks: legacy.bookmark_count,
+    views: at(r, "view_count_info", "count") ?? at(r, "views", "count"),
+  });
   const reply = compact({
     tweet_id: str(legacy.in_reply_to_status_id_str),
     username: str(legacy.in_reply_to_screen_name),
@@ -207,7 +250,7 @@ export function normalizeTweet(raw: unknown, depth = 0): SlimTweet | undefined {
   const article = object(at(r, "article", "article_results", "result"));
   return compact({
     id,
-    url: `https://x.com/${user?.username ?? "i/web"}/status/${id}`,
+    url: tweetUrl(id, user?.username),
     created_at: iso(legacy.created_at),
     author: user
       ? compact({
@@ -218,7 +261,7 @@ export function normalizeTweet(raw: unknown, depth = 0): SlimTweet | undefined {
           followers: user.followers,
         })
       : undefined,
-    text: capText(text, depth > 0 ? 1500 : 4000),
+    text: boundedTweetText(text, depth),
     lang: str(legacy.lang),
     metrics,
     reply_to: Object.keys(reply).length > 0 ? reply : undefined,
@@ -229,13 +272,7 @@ export function normalizeTweet(raw: unknown, depth = 0): SlimTweet | undefined {
         urls.map((u) => str(at(u, "expanded_url"))).filter((v): v is string => Boolean(v))
       ),
     ],
-    article: article.title
-      ? compact({
-          id: str(article.rest_id),
-          title: str(article.title),
-          preview: capText(str(article.preview_text) ?? "", 1000),
-        })
-      : undefined,
+    article: articlePreview(article.rest_id, article.title, article.preview_text),
     quoted:
       depth === 0
         ? normalizeTweet(r.quoted_tweet_results ?? r.quoted_status_result, depth + 1)

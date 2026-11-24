@@ -1,7 +1,24 @@
-import { setTimeout as delay } from "node:timers/promises";
-import { array, at, capText, compact, iso, num, object, type SlimTweet, str } from "./normalize.js";
+import {
+  array,
+  articlePreview,
+  at,
+  boundedTweetText,
+  compact,
+  iso,
+  num,
+  object,
+  type SlimTweet,
+  str,
+  tweetMedia,
+  tweetMetrics,
+  tweetUrl,
+} from "./normalize.js";
+import { requestDeadline, retryAfterSeconds, waitForRetry } from "./request.js";
 
 export const TWEETAPI_SEARCH_URL = "https://api.tweetapi.com/tw-v2/search";
+export const TWEETAPI_SETUP_HINT = "Set TWEETAPI_KEY to enable the TweetAPI search fallback.";
+export const TWEETAPI_SEARCH_ENDPOINT = `TweetAPI ${new URL(TWEETAPI_SEARCH_URL).pathname}`;
+
 export interface TweetApiPage {
   items: SlimTweet[];
   next_cursor?: string | undefined;
@@ -42,8 +59,7 @@ export function createTweetApiClient(options: {
   return {
     async search(query, type, cursor, signal) {
       signal?.throwIfAborted();
-      if (!apiKey)
-        throw new TweetApiError("Set TWEETAPI_KEY to enable the TweetAPI search fallback.");
+      if (!apiKey) throw new TweetApiError(TWEETAPI_SETUP_HINT);
       if (!query.trim() || Array.from(query).length > 512)
         throw new TweetApiError(
           "TweetAPI search query must be 1–512 characters; shorten the query."
@@ -54,8 +70,7 @@ export function createTweetApiClient(options: {
       url.searchParams.set("query", query);
       url.searchParams.set("type", type);
       if (cursor) url.searchParams.set("cursor", cursor);
-      const timeout = AbortSignal.timeout(options.timeoutMs ?? 30_000);
-      const combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
+      const { combined } = requestDeadline(signal, options.timeoutMs);
       for (let attempt = 0; ; attempt++) {
         combined.throwIfAborted();
         let response: Response;
@@ -71,16 +86,10 @@ export function createTweetApiClient(options: {
             "TweetAPI search network error. Check connectivity and retry later."
           );
         }
-        const retryHeader = response.headers.get("retry-after");
-        const retry =
-          retryHeader !== null && /^\d+$/.test(retryHeader) ? Number(retryHeader) : undefined;
+        const retry = retryAfterSeconds(response);
         if (response.status === 503 && attempt === 0 && retry !== undefined && retry <= 5) {
           await response.body?.cancel();
-          try {
-            await delay(retry * 1000, undefined, { signal: combined });
-          } catch {
-            throw combined.reason;
-          }
+          await waitForRetry(retry * 1000, combined);
           continue;
         }
         let raw: unknown;
@@ -124,34 +133,20 @@ export function normalizeTweetApiTweet(raw: unknown, depth = 0): SlimTweet | und
   const user = object(r.author);
   const username = str(user.username);
   const userId = str(user.id);
-  const metrics: Record<string, number> = {};
-  for (const [name, key] of Object.entries({
-    likes: "likeCount",
-    retweets: "retweetCount",
-    replies: "replyCount",
-    quotes: "quoteCount",
-    bookmarks: "bookmarkCount",
-    views: "viewCount",
-  })) {
-    const value = num(r[key]);
-    if (value !== undefined) metrics[name] = value;
-  }
+  const metrics = tweetMetrics({
+    likes: r.likeCount,
+    retweets: r.retweetCount,
+    replies: r.replyCount,
+    quotes: r.quoteCount,
+    bookmarks: r.bookmarkCount,
+    views: r.viewCount,
+  });
   const media = array(r.media).flatMap((value) => {
     const m = object(value);
     const mp4 = array(at(m, "videoInfo", "variants"))
       .map(object)
-      .filter((v) => (v.content_type ?? v.contentType) === "video/mp4")
-      .sort((a, b) => (num(b.bitrate) ?? 0) - (num(a.bitrate) ?? 0))[0];
-    const url = str(mp4?.url ?? m.url);
-    return url
-      ? [
-          compact({
-            type: m.type === "animated_gif" ? "gif" : (str(m.type) ?? "photo"),
-            url,
-            duration_s: num(m.duration),
-          }),
-        ]
-      : [];
+      .filter((v) => (v.content_type ?? v.contentType) === "video/mp4");
+    return tweetMedia(m.type, m.url, mp4, num(m.duration));
   });
   const reply = compact({
     tweet_id: str(at(r, "replyTo", "tweetId")),
@@ -160,8 +155,8 @@ export function normalizeTweetApiTweet(raw: unknown, depth = 0): SlimTweet | und
   const article = object(r.article);
   return compact({
     id,
-    url: `https://x.com/${username ?? "i/web"}/status/${id}`,
-    text: capText(r.text, depth > 0 ? 1500 : 4000),
+    url: tweetUrl(id, username),
+    text: boundedTweetText(r.text, depth),
     created_at: iso(r.createdAt),
     author:
       userId && username
@@ -185,13 +180,7 @@ export function normalizeTweetApiTweet(raw: unknown, depth = 0): SlimTweet | und
           .filter((v): v is string => Boolean(v))
       ),
     ],
-    article: article.title
-      ? compact({
-          id: str(article.id),
-          title: str(article.title),
-          preview: capText(str(article.previewText) ?? "", 1000),
-        })
-      : undefined,
+    article: articlePreview(article.id, article.title, article.previewText),
     quoted: depth === 0 ? normalizeTweetApiTweet(r.quotedTweet, depth + 1) : undefined,
     retweet_of: depth === 0 ? normalizeTweetApiTweet(r.retweetedTweet, depth + 1) : undefined,
   });

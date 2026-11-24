@@ -1,6 +1,6 @@
-import { setTimeout as delay } from "node:timers/promises";
 import { findObjects, normalizeUser, object } from "./normalize.js";
 import { parseUserRef } from "./parse.js";
+import { requestDeadline, retryAfterSeconds, waitForRetry } from "./request.js";
 
 export const X_API_HOST = "twitter283.p.rapidapi.com";
 export type Query = Record<string, string | number | boolean | undefined>;
@@ -42,22 +42,16 @@ export function createXClient(options: {
     for (const [name, value] of Object.entries(query)) {
       if (value !== undefined && value !== "") url.searchParams.set(name, String(value));
     }
-    const timeout = AbortSignal.timeout(options.timeoutMs ?? 30_000);
-    const combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
-    // One deadline covers both attempts and the backoff, including response bodies.
+    const { timeout, combined } = requestDeadline(signal, options.timeoutMs);
     try {
       for (let attempt = 0; ; attempt++) {
         combined.throwIfAborted();
         try {
-          return await request(url, endpoint, combined);
+          return await request(url, endpoint, apiKey, combined);
         } catch (error) {
           if (combined.aborted) throw combined.reason;
           if (!(error instanceof XApiError) || !error.retryable || attempt === 1) throw error;
-          try {
-            await delay(800 + Math.floor(Math.random() * 400), undefined, { signal: combined });
-          } catch {
-            throw combined.reason;
-          }
+          await waitForRetry(800 + Math.floor(Math.random() * 400), combined);
         }
       }
     } catch (error) {
@@ -69,13 +63,18 @@ export function createXClient(options: {
     }
   }
 
-  async function request(url: URL, endpoint: string, combined: AbortSignal): Promise<unknown> {
+  async function request(
+    url: URL,
+    endpoint: string,
+    key: string,
+    combined: AbortSignal
+  ): Promise<unknown> {
     let response: Response;
     try {
       response = await fetcher(url, {
         // Never forward a custom credential header to an unexpected redirect target.
         redirect: "error",
-        headers: { "x-rapidapi-host": X_API_HOST, "x-rapidapi-key": apiKey as string },
+        headers: { "x-rapidapi-host": X_API_HOST, "x-rapidapi-key": key },
         signal: combined,
       });
     } catch {
@@ -103,8 +102,7 @@ export function createXClient(options: {
         );
       }
       if (response.status === 429) {
-        const header = response.headers.get("retry-after");
-        const retry = header && /^\d+$/.test(header) ? Number(header) : rateLimit.reset_seconds;
+        const retry = retryAfterSeconds(response) ?? rateLimit.reset_seconds;
         throw new XApiError(
           `X API rate limited (429).${retry === undefined ? "" : ` Retry after ${retry} seconds.`}`,
           false,

@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { readFile, rm } from "node:fs/promises";
 import { dirname } from "node:path";
 import test from "node:test";
@@ -10,10 +9,7 @@ import { X_TOOL_NAMES } from "../src/constants.js";
 import { createXClient, type Query, XApiError, type XClient } from "../src/x/client.js";
 import { formatXResult, registerXTools } from "../src/x/tools.js";
 import { type TweetApiClient, TweetApiError } from "../src/x/tweetapi.js";
-
-function fixture(name: string): unknown {
-  return JSON.parse(readFileSync(new URL(`./fixtures/x/${name}.json`, import.meta.url), "utf8"));
-}
+import { fixture } from "./fixtures/x/load.js";
 interface Tool {
   parameters: TSchema;
   outputSchema: TSchema;
@@ -267,8 +263,7 @@ void test("search retries primary then falls back, and continuation stays on Twe
   assert.equal(raw.details.endpoint, "TweetAPI /tw-v2/search");
 });
 
-void test("fallback failures are actionable; all eligibility and cursor boundaries are enforced", async (t) => {
-  t.mock.timers.enable({ apis: ["Date"], now: 1_000_000 });
+void test("search fallback failures are actionable and cursors cannot cross providers", async () => {
   const outage = new XApiError("X API HTTP 500 for /Search.", true, 500);
   await assert.rejects(
     harness({ "/Search": outage }).run("x_search", { query: "ai" }),
@@ -366,20 +361,38 @@ void test("fallback failures are actionable; all eligibility and cursor boundari
   await harness({ "/Search": { instructions: [] } }, fallback).run("x_search", { query: "ai" });
   await harness({}, fallback).run("x_search", { query: "ai" });
   assert.equal(calls, before, "empty/successful primary must not fall back");
+});
 
-  const cooldown = harness({ "/Search": outage }, fallback);
+void test("first-page searches use fallback until the primary cooldown expires", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 1_000_000 });
+  const queries: string[] = [];
+  const cooldown = harness(
+    { "/Search": new XApiError("Upstream failure", true, 500) },
+    {
+      async search(query) {
+        queries.push(query);
+        return { items: [] };
+      },
+    }
+  );
   await cooldown.run("x_search", { query: "one", cursor: null });
   await cooldown.run("x_search", { query: "two", cursor: " \t" });
   assert.equal(cooldown.calls.length, 1, "first-page calls reuse fallback during cooldown");
-  assert.equal(calls, before + 2, "fallback responses, including empty pages, are not cached");
+  assert.deepEqual(
+    queries,
+    ["one", "two"],
+    "fallback responses, including empty pages, are not cached"
+  );
   t.mock.timers.tick(29_999);
   await cooldown.run("x_search", { query: "three" });
   assert.equal(cooldown.calls.length, 1);
   t.mock.timers.tick(1);
   await cooldown.run("x_search", { query: "four" });
   assert.equal(cooldown.calls.length, 2, "primary is probed when the 30-second cooldown expires");
-  assert.equal(calls, before + 4);
+  assert.deepEqual(queries, ["one", "two", "three", "four"]);
+});
 
+void test("standalone tweets accept an empty cursor and reject continuation before lookup", async () => {
   const standalone = harness();
   const tweet = "1768778186186195177";
   for (const cursor of [null, "", " \t"]) {

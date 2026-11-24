@@ -11,14 +11,15 @@ interface Command {
   handler: (args: string, ctx: unknown) => Promise<void>;
 }
 
+interface Tool {
+  name: string;
+  execute(id: string, params: unknown): Promise<{ structuredContent: { provider?: string } }>;
+}
+
 function createHarness() {
   const handlers = new Map<string, Handler>();
   const commands = new Map<string, Command>();
-  const tools = new Set<string>();
-  const definitions = new Map<
-    string,
-    { execute(id: string, params: unknown): Promise<{ structuredContent: { provider?: string } }> }
-  >();
+  const tools = new Map<string, Tool>();
   const pi = {
     on: (name: string, handler: Handler) => {
       handlers.set(name, handler);
@@ -26,16 +27,10 @@ function createHarness() {
     registerCommand: (name: string, command: Command) => {
       commands.set(name, command);
     },
-    registerTool: (tool: { name: string }) => {
-      tools.add(tool.name);
-      definitions.set(
-        tool.name,
-        tool as unknown as NonNullable<ReturnType<typeof definitions.get>>
-      );
-    },
+    registerTool: (tool: Tool) => tools.set(tool.name, tool),
   } as unknown as ExtensionAPI;
   socialResearch(pi);
-  return { handlers, commands, tools, definitions };
+  return { handlers, commands, tools };
 }
 
 function createContext(hasUI = true) {
@@ -58,7 +53,7 @@ function createContext(hasUI = true) {
 
 void test("extension registers 9 X tools, no echo/label state, and help/status command", () => {
   const h = createHarness();
-  assert.deepEqual([...h.tools], X_TOOL_NAMES);
+  assert.deepEqual([...h.tools.keys()], X_TOOL_NAMES);
   assert.ok(h.commands.has(EXTENSION_COMMAND));
   assert.equal(h.handlers.has("session_start"), false);
   assert.equal(h.handlers.has("session_tree"), false);
@@ -106,7 +101,7 @@ void test("fallback key is lazy, rotates, and can be removed without reload", as
   });
   const h = createHarness();
   assert.equal(fetcher.mock.callCount(), 0);
-  const search = h.definitions.get("x_search");
+  const search = h.tools.get("x_search");
   assert.ok(search);
   await assert.rejects(search.execute("c", { query: "ai" }), /Set TWEETAPI_KEY/);
   for (const key of ["first", "second"]) {
